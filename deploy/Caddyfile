@@ -5,6 +5,6 @@
 #
 # Replace <ip-with-dashes> below with your VM's public IP, dots -> dashes,
 # e.g. 143.47.28.10 -> 143-47-28-10
-<ip-with-dashes>.sslip.io {
+35-252-212-174.sslip.io {
     reverse_proxy localhost:8000
 }
