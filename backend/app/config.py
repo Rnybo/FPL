@@ -22,7 +22,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 CURRENT_SEASON = "2026-27"
 
-# CORS: the Vercel-hosted frontend's origin(s). Update ALLOWED_ORIGINS once the
-# frontend has a real deployment URL; "*" during local dev is fine, tighten
-# before going live with friends.
-ALLOWED_ORIGINS = ["http://localhost:5173", "http://localhost:3000"]
+# CORS: the Vercel-hosted frontend's origin(s). Reads from ALLOWED_ORIGINS env var
+# (comma-separated) if set -- e.g. "https://fpl-xyz.vercel.app" in production --
+# falling back to localhost dev ports so nothing changes for local development.
+_origins_env = os.environ.get("ALLOWED_ORIGINS")
+ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",")] if _origins_env else [
+    "http://localhost:5173", "http://localhost:3000"
+]

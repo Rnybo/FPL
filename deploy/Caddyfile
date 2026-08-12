@@ -1,0 +1,10 @@
+# Reverse proxy for the FPL backend -- terminates HTTPS via Let's Encrypt
+# automatically for the sslip.io hostname (a real public DNS name that maps
+# to this VM's own IP, so Let's Encrypt's HTTP-01 challenge succeeds with
+# zero manual cert handling and zero domain purchase).
+#
+# Replace <ip-with-dashes> below with your VM's public IP, dots -> dashes,
+# e.g. 143.47.28.10 -> 143-47-28-10
+<ip-with-dashes>.sslip.io {
+    reverse_proxy localhost:8000
+}

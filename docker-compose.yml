@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - fpl_data:/srv/data
+    environment:
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
     restart: unless-stopped
 
 volumes:
