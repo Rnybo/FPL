@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SquadBuilder from '../SquadBuilder'
@@ -80,7 +80,12 @@ describe('SquadBuilder', () => {
     expect(screen.getByText('15 / 15')).toBeInTheDocument()
     expect(screen.getByText(/£14\.5m/)).toBeInTheDocument() // 100 - 85.5
     expect(screen.getByText('Erling Haaland')).toBeInTheDocument()
-    expect(screen.getByText('Matz Sels')).toBeInTheDocument()
+    // getAllByText, not getByText -- these fixtures have no per-gameweek data
+    // (gwXp ties at 0 for everyone), so the new captaincy draft plan's
+    // tie-break also surfaces Matz Sels there in addition to the pitch. That
+    // overlap is expected given flat mock data, not a rendering bug -- this
+    // test only cares that he's rendered at all, not exactly where.
+    expect(screen.getAllByText('Matz Sels').length).toBeGreaterThan(0)
   })
 
   it('removing a player empties that slot and shows a notification', async () => {
@@ -104,13 +109,17 @@ describe('SquadBuilder', () => {
     const user = userEvent.setup()
     await user.click(screen.getByLabelText('Remove Erling Haaland'))
 
-    expect(screen.getByText('Ultra Expensive Striker')).toBeInTheDocument()
-    expect(screen.getByText(/over budget/i)).toBeInTheDocument()
+    // Scoped to the sidebar specifically -- "Just missed the cut" now also
+    // surfaces the same near-miss players, so an unscoped query would find
+    // two matches (a real, expected UI overlap, not a bug).
+    const sidebar = screen.getByRole('complementary')
+    expect(within(sidebar).getByText('Ultra Expensive Striker')).toBeInTheDocument()
+    expect(within(sidebar).getByText(/over budget/i)).toBeInTheDocument()
     // Per user request: budget/club-limit violations warn, they don't block --
     // only a genuinely missing empty slot (a structural constraint) should.
-    expect(screen.getByLabelText('Add Ultra Expensive Striker')).not.toBeDisabled()
+    expect(within(sidebar).getByLabelText('Add Ultra Expensive Striker')).not.toBeDisabled()
 
-    await user.click(screen.getByLabelText('Add Ultra Expensive Striker'))
+    await user.click(within(sidebar).getByLabelText('Add Ultra Expensive Striker'))
     expect(screen.getByText(/over budget by/i)).toBeInTheDocument() // persistent banner
   })
 
@@ -119,7 +128,10 @@ describe('SquadBuilder', () => {
     renderWithClient(<SquadBuilder />)
     const user = userEvent.setup()
     await user.click(screen.getByLabelText('Remove Erling Haaland'))
-    await user.click(screen.getByLabelText('Add Pool FWD Replacement'))
+    // Scoped to the sidebar -- the near-miss panel also has an "Add Pool FWD
+    // Replacement" button once that slot is empty (same real overlap as above).
+    const sidebar = screen.getByRole('complementary')
+    await user.click(within(sidebar).getByLabelText('Add Pool FWD Replacement'))
 
     expect(screen.getByText(/pool fwd replacement has been added/i)).toBeInTheDocument()
     expect(screen.getByText('15 / 15')).toBeInTheDocument()
@@ -156,9 +168,15 @@ describe('SquadBuilder', () => {
     mockHooks()
     renderWithClient(<SquadBuilder />)
     const user = userEvent.setup()
-    await user.selectOptions(screen.getByDisplayValue('All positions'), 'FWD')
-    expect(screen.getByText('Pool FWD Replacement')).toBeInTheDocument()
-    expect(screen.queryByText('Mohamed Salah')).not.toBeInTheDocument()
+    // Scoped to the sidebar -- the position filter only affects the SIDEBAR's
+    // candidate list, not the "Just missed the cut" panel (which intentionally
+    // always shows all positions), so both names can legitimately appear
+    // there regardless of this filter -- checking the sidebar specifically is
+    // what this test is actually about.
+    const sidebar = screen.getByRole('complementary')
+    await user.selectOptions(within(sidebar).getByDisplayValue('All positions'), 'FWD')
+    expect(within(sidebar).getByText('Pool FWD Replacement')).toBeInTheDocument()
+    expect(within(sidebar).queryByText('Mohamed Salah')).not.toBeInTheDocument()
   })
 
   it('shows a loading state while the squad is being fetched', () => {
@@ -166,5 +184,184 @@ describe('SquadBuilder', () => {
     vi.spyOn(hooks, 'useOptimalSquad').mockReturnValue({ data: undefined, isLoading: true, isError: false } as never)
     renderWithClient(<SquadBuilder />)
     expect(screen.getByText(/loading squad/i)).toBeInTheDocument()
+  })
+
+  // The lineup (starters/bench/captain/vice) is computed CLIENT-SIDE from the
+  // 15-player squad's own xP (see computeLineup in SquadBuilder.tsx) --
+  // independent of whatever the mocked useOptimalSquad response's own
+  // `lineup` field says. For FULL_SQUAD's actual xP values, the auto-optimal
+  // formation is 3-5-2 (verified by hand: benching the 2 weakest DEF beats
+  // any alternative shape) -- Haaland (6.2xP) captains, Fwd Two (5.5xP) vices.
+  it('auto formation captains the highest-xP starter and vice-captains the 2nd', () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const starters = screen.getByLabelText('Starting XI')
+    const haalandCard = within(starters).getByText('Erling Haaland').closest('div')!
+    expect(within(haalandCard).getByText('C')).toBeInTheDocument()
+    const viceCard = within(starters).getByText('Fwd Two').closest('div')!
+    expect(within(viceCard).getByText('V')).toBeInTheDocument()
+  })
+
+  it('the 2 weakest defenders are benched under the auto-optimal 3-5-2 formation', () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const bench = screen.getByLabelText('Bench')
+    expect(within(bench).getByText('Def Four')).toBeInTheDocument() // 2.5xP
+    expect(within(bench).getByText('Def Five')).toBeInTheDocument() // 2.1xP
+    const starters = screen.getByLabelText('Starting XI')
+    expect(within(starters).queryByText('Def Four')).not.toBeInTheDocument()
+  })
+
+  it('selecting a specific formation moves a benched player into the starting XI', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+    expect(within(screen.getByLabelText('Bench')).getByText('Def Five')).toBeInTheDocument()
+
+    // 5-2-3 fits all 5 DEF as starters -- Def Five should move off the bench.
+    await user.selectOptions(screen.getByDisplayValue('Auto (optimal)'), '5-2-3')
+
+    expect(within(screen.getByLabelText('Starting XI')).getByText('Def Five')).toBeInTheDocument()
+    expect(within(screen.getByLabelText('Bench')).queryByText('Def Five')).not.toBeInTheDocument()
+  })
+
+  it('lock mode shows a padlock on each card, and toggling it updates the locked count', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    const modeSwitch = screen.getByRole('switch', { name: /toggle lock mode/i })
+    expect(modeSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByLabelText('Lock Erling Haaland')).not.toBeInTheDocument()
+
+    await user.click(modeSwitch)
+    expect(modeSwitch).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(/0 players currently locked/)).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Lock Erling Haaland'))
+    expect(screen.getByText(/1 player currently locked/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Unlock Erling Haaland')).toBeInTheDocument()
+  })
+
+  it('"Build around N locked" sends ONLY the explicitly-locked players, not the whole current squad', async () => {
+    mockHooks()
+    const apiSpy = vi.spyOn(client, 'apiGet').mockResolvedValue(mockOptimal({ squad: FULL_SQUAD }) as never)
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+    await user.click(screen.getByLabelText('Lock Erling Haaland'))
+    await user.click(screen.getByText(/build around 1 locked/i))
+
+    expect(apiSpy).toHaveBeenCalled()
+    const calledUrl = apiSpy.mock.calls[0][0] as string
+    expect(calledUrl).toContain('locked=13') // Haaland's id -- ONLY his
+    expect(calledUrl).not.toContain('locked=13,') // not followed by anyone else
+  })
+
+  it('in lock mode, manually adding a player via the sidebar locks them automatically', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByLabelText('Remove Erling Haaland')) // free up a FWD slot first
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+
+    const sidebar = screen.getByRole('complementary')
+    await user.click(within(sidebar).getByLabelText('Add Pool FWD Replacement'))
+
+    expect(screen.getByText(/pool fwd replacement has been added to your squad and locked in/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('Unlock Pool FWD Replacement')).toBeInTheDocument()
+    expect(screen.getByText(/1 player currently locked/)).toBeInTheDocument()
+  })
+
+  it('in lock mode, swapping in a near-miss player also locks them automatically', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+    await user.click(screen.getByLabelText('Swap in Ultra Expensive Striker'))
+
+    expect(screen.getByText(/swapped in ultra expensive striker for fwd three and locked in/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('Unlock Ultra Expensive Striker')).toBeInTheDocument()
+  })
+
+  it('in FREE mode (switch off), adding a player does NOT lock them', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByLabelText('Remove Erling Haaland'))
+    const sidebar = screen.getByRole('complementary')
+    await user.click(within(sidebar).getByLabelText('Add Pool FWD Replacement'))
+
+    expect(screen.getByText(/pool fwd replacement has been added to your squad$/i)).toBeInTheDocument()
+    // No padlocks exist at all outside lock mode -- confirms nothing got
+    // silently locked in the background where it wouldn't even be visible.
+    expect(screen.queryByLabelText('Unlock Pool FWD Replacement')).not.toBeInTheDocument()
+  })
+
+  it('Reset team empties every slot and clears locks', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+    await user.click(screen.getByLabelText('Lock Erling Haaland'))
+    await user.click(screen.getByText(/reset team/i))
+
+    expect(screen.getByText('0 / 15')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Remove Erling Haaland')).not.toBeInTheDocument()
+    expect(screen.getByText(/0 players currently locked/)).toBeInTheDocument()
+  })
+
+  it('swapping in a near-miss player when the position is full replaces the weakest starter there', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+    // Squad is already full (15/15) -- FWD has no empty slot, so this must be
+    // a genuine swap: Ultra Expensive Striker (8.0xP) should bump the weakest
+    // current FWD, which is Fwd Three (2.0xP), not Haaland or Fwd Two.
+    const nearMissSwapButton = screen.getByLabelText('Swap in Ultra Expensive Striker')
+    await user.click(nearMissSwapButton)
+
+    expect(screen.getByText(/swapped in ultra expensive striker for fwd three/i)).toBeInTheDocument()
+    expect(screen.getByText('Ultra Expensive Striker')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Remove Fwd Three')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Remove Erling Haaland')).toBeInTheDocument() // untouched
+  })
+
+  it('the captaincy draft plan recommends a DIFFERENT captain per gameweek when each player has their own standout week', () => {
+    // Haaland spikes GW1, Mid One spikes GW2 -- everyone else stays flat and
+    // low. The plan should follow the spike, not default to one fixed player.
+    // Both usePlayers AND useOptimalSquad need this data -- the actual Player
+    // OBJECTS (with .gameweeks) come from usePlayers via playerById; the
+    // optimal-squad mock only supplies the initial slot IDs.
+    const variedSquad = FULL_SQUAD.map((p) => {
+      if (p.player_id === 13) { // Erling Haaland
+        return { ...p, gameweeks: [{ gw: 1, xP: 9.0 }, { gw: 2, xP: 1.0 }, { gw: 3, xP: 1.0 }, { gw: 4, xP: 1.0 }, { gw: 5, xP: 1.0 }] }
+      }
+      if (p.player_id === 8) { // Mid One
+        return { ...p, gameweeks: [{ gw: 1, xP: 1.0 }, { gw: 2, xP: 9.5 }, { gw: 3, xP: 1.0 }, { gw: 4, xP: 1.0 }, { gw: 5, xP: 1.0 }] }
+      }
+      return { ...p, gameweeks: [1, 2, 3, 4, 5].map((gw) => ({ gw, xP: 0.5 })) }
+    })
+    const otherPlayers = MOCK_PLAYERS.players.filter((p) => !FULL_SQUAD.some((f) => f.player_id === p.player_id))
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({
+      data: { ...MOCK_PLAYERS, players: [...variedSquad, ...otherPlayers] }, isLoading: false, isError: false,
+    } as never)
+    vi.spyOn(hooks, 'useOptimalSquad').mockReturnValue({ data: mockOptimal({ squad: variedSquad }), isLoading: false, isError: false } as never)
+    vi.spyOn(hooks, 'useCaptainPicks').mockReturnValue({ data: { gw: 1, safe: [], haul: [] }, isLoading: false, error: null } as never)
+
+    renderWithClient(<SquadBuilder />)
+
+    const plan = screen.getByRole('region', { name: /captaincy draft plan/i })
+    const rows = within(plan).getAllByRole('row').slice(1) // skip header
+
+    expect(within(rows[0]).getByText('Erling Haaland')).toBeInTheDocument() // GW1
+    expect(within(rows[0]).getByText('18.0')).toBeInTheDocument() // 9.0 doubled
+    expect(within(rows[1]).getByText('Mid One')).toBeInTheDocument() // GW2
+    expect(within(rows[1]).getByText('19.0')).toBeInTheDocument() // 9.5 doubled
   })
 })

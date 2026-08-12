@@ -32,6 +32,53 @@ class TestValidFormations:
         assert len(opt.valid_formations()) == expected
 
 
+class TestBestLineupForcedFormation:
+    """best_lineup(formation=...) -- lets a caller force one specific
+    formation instead of searching all of them (see its docstring for why:
+    one authoritative implementation shared by the auto-search path)."""
+
+    def _full_squad(self, synthetic_pool):
+        return opt.build_initial_squad(synthetic_pool)["squad"]
+
+    def test_forced_formation_is_used_exactly(self, synthetic_pool):
+        squad = self._full_squad(synthetic_pool)
+        forced = {"GK": 1, "DEF": 5, "MID": 2, "FWD": 3}
+        result = opt.best_lineup(squad, formation=forced)
+        assert result is not None
+        assert result["formation"] == forced
+        counts = result["starters"]["position"].value_counts().to_dict()
+        assert counts == {"DEF": 5, "MID": 2, "FWD": 3, "GK": 1}
+
+    def test_forced_formation_matches_auto_search_when_it_is_the_best_one(self, synthetic_pool):
+        """If the globally best formation IS the one forced, results should
+        be identical -- confirms the extracted helper didn't change behavior."""
+        squad = self._full_squad(synthetic_pool)
+        auto = opt.best_lineup(squad)
+        forced = opt.best_lineup(squad, formation=auto["formation"])
+        assert forced["expected_points"] == auto["expected_points"]
+        assert forced["captain"] == auto["captain"]
+
+    def test_invalid_formation_wrong_total_returns_none(self, synthetic_pool):
+        squad = self._full_squad(synthetic_pool)
+        result = opt.best_lineup(squad, formation={"GK": 1, "DEF": 5, "MID": 5, "FWD": 3})  # sums to 14
+        assert result is None
+
+    def test_invalid_formation_outside_limits_returns_none(self, synthetic_pool):
+        squad = self._full_squad(synthetic_pool)
+        # FWD max is 3 -- 4 is outside FORMATION_LIMITS regardless of total
+        result = opt.best_lineup(squad, formation={"GK": 1, "DEF": 3, "MID": 3, "FWD": 4})
+        assert result is None
+
+    def test_a_non_optimal_forced_formation_scores_less_or_equal(self, synthetic_pool):
+        squad = self._full_squad(synthetic_pool)
+        auto = opt.best_lineup(squad)
+        # 5-2-3 is always LEGAL but rarely the highest-scoring shape -- if it's
+        # not what auto-search picked, it must score <= the auto-search result
+        # (auto-search is exhaustive over every valid formation).
+        forced = opt.best_lineup(squad, formation={"GK": 1, "DEF": 5, "MID": 2, "FWD": 3})
+        assert forced["expected_points"] <= auto["expected_points"] + 1e-9
+
+
 class TestBuildInitialSquad:
     def test_respects_squad_limits(self, synthetic_pool):
         result = opt.build_initial_squad(synthetic_pool)

@@ -218,9 +218,10 @@ describe('PlayerScout', () => {
 
     await user.click(screen.getByText('Erling Haaland'))
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText('GW1')).toBeInTheDocument()
-    expect(within(dialog).getByText('GW2')).toBeInTheDocument()
-    expect(within(dialog).getByText('GW3')).toBeInTheDocument()
+    // Table now, not cards -- GW numbers are their own column (no "GW" prefix
+    // per-row, just a "GW" header), so check the row structure + values instead.
+    const rows = within(dialog).getAllByRole('row').slice(1) // skip header row
+    expect(rows).toHaveLength(3)
     expect(within(dialog).getByText('4.2')).toBeInTheDocument() // his GW3 value
   })
 

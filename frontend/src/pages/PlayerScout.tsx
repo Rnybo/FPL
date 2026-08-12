@@ -11,7 +11,7 @@ const FDR_LOOKAHEAD = 8 // gameweeks of fixture difficulty to show, independent 
                           // fixtures staying easy even beyond a short selected range
 
 type Position = 'ALL' | Player['position']
-type SortField = 'xP' | 'price' | 'name' | keyof XpBreakdown | `gw:${number}`
+type SortField = 'xP' | 'price' | 'name' | 'valuePerPrice' | keyof XpBreakdown | `gw:${number}`
 type SortLevel = { field: SortField; dir: 'asc' | 'desc' }
 
 const BREAKDOWN_LABELS: Record<keyof XpBreakdown, string> = {
@@ -34,8 +34,8 @@ const COLUMN_KEYS: (keyof XpBreakdown)[] = ['goal_pts', 'assist_pts', 'cs_pts', 
 // depends on the selected range), so this is a function, not a static Record like before.
 function sortFieldLabel(field: SortField): string {
   if (field.startsWith('gw:')) return `GW${field.slice(3)}`
-  const labels: Record<'xP' | 'price' | 'name' | keyof XpBreakdown, string> = {
-    xP: 'xP', price: 'Price', name: 'Name', ...BREAKDOWN_LABELS,
+  const labels: Record<'xP' | 'price' | 'name' | 'valuePerPrice' | keyof XpBreakdown, string> = {
+    xP: 'xP', price: 'Price', name: 'Name', valuePerPrice: 'Value (xP/£m)', ...BREAKDOWN_LABELS,
   }
   return labels[field as keyof typeof labels]
 }
@@ -43,6 +43,7 @@ function sortFieldLabel(field: SortField): string {
 function fieldValue(p: Player, field: SortField): number | string {
   if (field === 'name') return p.name
   if (field === 'xP' || field === 'price') return p[field]
+  if (field === 'valuePerPrice') return p.price > 0 ? p.xP / p.price : 0
   if (field.startsWith('gw:')) {
     const gw = Number(field.slice(3))
     return p.gameweeks?.find((g) => g.gw === gw)?.xP ?? 0
@@ -104,7 +105,7 @@ export default function PlayerScout() {
     for (let gw = gwStart; gw <= gwEnd; gw++) opts.push(`gw:${gw}` as SortField)
     return opts
   }, [gwStart, gwEnd])
-  const allSortFields = ['xP', 'price', 'name', ...COLUMN_KEYS, ...gwOptions] as SortField[]
+  const allSortFields = ['xP', 'price', 'name', 'valuePerPrice', ...COLUMN_KEYS, ...gwOptions] as SortField[]
 
   // Clicking a column header: if it's already the primary sort, flip
   // direction; otherwise promote it to primary (desc first), keeping any
@@ -134,7 +135,7 @@ export default function PlayerScout() {
   if (isError) return <div className="p-6 text-red-600">Failed to load: {(error as Error).message}</div>
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-3 sm:p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold text-slate-900 mb-1">Player Scout</h1>
       <p className="text-slate-500 text-sm mb-4">
         Predicted xP for GW{gwStart}{gwEnd !== gwStart ? `-${gwEnd}` : ''} (run #{data?.run_id}) —
@@ -202,7 +203,7 @@ export default function PlayerScout() {
             <span className="text-xs text-slate-400">{i + 1}.</span>
             <select value={level.field} onChange={(e) => updateSortLevel(i, { field: e.target.value as SortField })}
               className="text-xs bg-transparent">
-              {(['xP', 'price', 'name', ...COLUMN_KEYS] as SortField[]).map((f) => (
+              {(['xP', 'price', 'name', 'valuePerPrice', ...COLUMN_KEYS] as SortField[]).map((f) => (
                 <option key={f} value={f}>{sortFieldLabel(f)}</option>
               ))}
               {gwOptions.length > 0 && (
@@ -232,7 +233,12 @@ export default function PlayerScout() {
         )}
       </div>
 
-      <table className="w-full text-sm border-collapse">
+      {/* Horizontal scroll on narrow screens rather than squeezing columns --
+          this table has a lot of always-visible columns by design (see
+          COLUMN_KEYS comment above), so on phone width the right move is a
+          swipeable table, not hiding data. */}
+      <div className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
+      <table className="w-full text-sm border-collapse min-w-[720px]">
         <thead>
           <tr className="text-left text-slate-500 border-b border-slate-200">
             <th className="py-2 pr-3 w-8"></th>
@@ -245,6 +251,7 @@ export default function PlayerScout() {
               <SortableHeader key={key} field={key} label={BREAKDOWN_LABELS[key]} sortLevels={sortLevels} onClick={sortByColumn} align="right" />
             ))}
             <SortableHeader field="xP" label="xP" sortLevels={sortLevels} onClick={sortByColumn} align="right" />
+            <SortableHeader field="valuePerPrice" label="Value" sortLevels={sortLevels} onClick={sortByColumn} align="right" />
           </tr>
         </thead>
         <tbody>
@@ -255,6 +262,7 @@ export default function PlayerScout() {
           ))}
         </tbody>
       </table>
+      </div>
       {rows.length === 0 && <p className="text-slate-400 text-sm py-6 text-center">No players match.</p>}
       {selectedPlayer && (
         <PlayerDetailModal
@@ -320,7 +328,10 @@ function PlayerRow({ player, fdr, onClick }: {
           </td>
         )
       })}
-      <td className="py-2 text-right font-semibold text-emerald-700">{player.xP.toFixed(2)}</td>
+      <td className="py-2 pr-3 text-right font-semibold text-emerald-700">{player.xP.toFixed(2)}</td>
+      <td className="py-2 text-right text-slate-600">
+        {player.price > 0 ? (player.xP / player.price).toFixed(2) : '—'}
+      </td>
     </tr>
   )
 }

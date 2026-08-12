@@ -22,6 +22,17 @@ import optimise
 
 router = APIRouter(prefix="/api/squad", tags=["squad"])
 
+
+def _parse_formation(s: str) -> dict:
+    """"D-M-F" (e.g. "4-4-2") -> {"GK":1,"DEF":D,"MID":M,"FWD":F}. GK is
+    omitted from the string since it's always exactly 1 in FPL -- matches
+    common football shorthand rather than inventing a new format."""
+    parts = s.split("-")
+    if len(parts) != 3 or not all(p.strip().isdigit() for p in parts):
+        raise HTTPException(400, f"Invalid formation {s!r} -- expected 'DEF-MID-FWD', e.g. '4-4-2'")
+    d, m, f = (int(p) for p in parts)
+    return {"GK": 1, "DEF": d, "MID": m, "FWD": f}
+
 # See user's own reasoning, verbatim: "easy fixtures often means points AND
 # you can keep them for longer". The xP for the SELECTED window already
 # reflects fixture difficulty within that window (Dixon-Coles uses the
@@ -82,6 +93,72 @@ def _add_selection_score(pool, run_id: int, gw_end: int | None):
     return pool
 
 
+def _load_per_gw(run_id: int, gw_start: int | None, gw_end: int | None):
+    """Same base data as _load_pool, but grouped by (player_id, gw) instead of
+    summed across the whole window -- needed for anything that cares about
+    an INDIVIDUAL gameweek's number rather than the window total (the
+    captain ceiling bonus below, and the client-side captaincy draft plan --
+    see PlayerScout/SquadBuilder's own per-gameweek data, which is the exact
+    same shape as this)."""
+    sql = """SELECT mp.player_id, f.gw, mp.predicted_points AS xP
+             FROM model_predictions mp
+             JOIN fixtures f ON f.fixture_id = mp.fixture_id
+             WHERE mp.run_id = ?"""
+    params: tuple = (run_id,)
+    if gw_start is not None:
+        sql += " AND f.gw >= ?"
+        params += (gw_start,)
+    if gw_end is not None:
+        sql += " AND f.gw <= ?"
+        params += (gw_end,)
+    df = query_df(sql, params)
+    if df.empty:
+        return df
+    return df.groupby(["player_id", "gw"], as_index=False)["xP"].sum()  # double-GW-safe within a single gw
+
+
+# Captaincy matters: whoever captains a gameweek scores DOUBLE that week, so
+# a squad with at least one genuine single-week standout is worth more than
+# the same total spread flatly across 15 consistent-but-unspectacular
+# players. CAPTAIN_CEILING_WEIGHT nudges squad SELECTION toward that --
+# a documented judgment call, not learned from data, same honesty standard
+# as LOOKAHEAD_WEIGHT/BENCH_WEIGHT elsewhere in this pipeline.
+CAPTAIN_CEILING_WEIGHT = 0.3
+
+
+def _captain_ceiling_from_per_gw(pool, per_gw):
+    """Pure logic split out from _add_captain_ceiling_bonus below so it's
+    testable with synthetic per-gw data, no DB round-trip needed -- see
+    tests/test_squad.py."""
+    if per_gw.empty:
+        return pool
+    ceiling = per_gw.groupby("player_id")["xP"].max()
+    pool = pool.copy()
+    pool["selection_score"] = pool["selection_score"] + CAPTAIN_CEILING_WEIGHT * pool["player_id"].map(ceiling).fillna(0)
+    return pool
+
+
+def _add_captain_ceiling_bonus(pool, run_id: int, gw_start: int | None, gw_end: int | None):
+    """Adds CAPTAIN_CEILING_WEIGHT * (player's own best single gameweek in
+    the window) to selection_score -- added ONLY to the optimizer's objective
+    (never shown as real xP, same convention as _add_selection_score above).
+
+    This is a documented APPROXIMATION: each player's OWN peak week, not an
+    exact joint optimization of "who captains which specific week" (that
+    would need one binary captain-variable per player per gameweek inside
+    the ILP). Deliberately not built that way -- captaincy is inherently a
+    week-by-week decision independent of this window's one-shot squad
+    choice, exactly like the real game (you keep your squad, but repick
+    captain every week). The EXACT per-week version -- which squad member
+    actually has the biggest number in gameweek N specifically -- is
+    computed separately and precisely once a squad exists, from the same
+    per-gameweek breakdown already returned by GET /api/players (see
+    SquadBuilder's captaincy draft plan, built client-side from that data
+    rather than needing a second backend round-trip)."""
+    per_gw = _load_per_gw(run_id, gw_start, gw_end)
+    return _captain_ceiling_from_per_gw(pool, per_gw)
+
+
 def _serialize(run_id, gw_start, gw_end, squad_df, lineup, extra=None):
     # starter_ids/bench_ids are the AUTHORITATIVE fields -- matching on names is
     # fragile (this project found real accent-encoding bugs splitting player
@@ -117,6 +194,7 @@ def optimal_squad(
     gw_start: int | None = Query(None, description="First gameweek to include (inclusive)"),
     gw_end: int | None = Query(None, description="Last gameweek to include (inclusive)"),
     locked: str | None = Query(None, description="Comma-separated player_ids that must be included"),
+    formation: str | None = Query(None, description="Force a specific formation, e.g. '4-4-2' (DEF-MID-FWD). Omit for the auto-optimal formation."),
 ):
     conn = get_connection()
     row = conn.execute(
@@ -128,6 +206,7 @@ def optimal_squad(
 
     pool = _load_pool(row["run_id"], gw_start, gw_end)
     pool = _add_selection_score(pool, row["run_id"], gw_end)
+    pool = _add_captain_ceiling_bonus(pool, row["run_id"], gw_start, gw_end)
     locked_ids = [int(pid) for pid in locked.split(",") if pid.strip()] if locked else []
 
     # Joint squad+lineup optimizer (see optimise.py's docstring) -- fixes a real
@@ -155,7 +234,11 @@ def optimal_squad(
     # rather than trusting the selection_score-based y_i the optimizer
     # returned. Cheap and exact -- best_lineup() is greedy formation search,
     # see optimise.py's own docstring for why that's provably correct.
-    result["lineup"] = optimise.best_lineup(result["squad"], score_col="xP")
+    forced_formation = _parse_formation(formation) if formation else None
+    lineup = optimise.best_lineup(result["squad"], score_col="xP", formation=forced_formation)
+    if lineup is None:
+        raise HTTPException(400, f"Formation {formation!r} isn't feasible for this squad")
+    result["lineup"] = lineup
 
     return _serialize(row["run_id"], gw_start, gw_end, result["squad"], result["lineup"],
                        extra={"locked_player_ids": locked_ids})
@@ -166,6 +249,7 @@ def lineup_for_squad(
     player_ids: str = Query(..., description="Comma-separated player_ids -- exactly 15, any combination"),
     gw_start: int | None = Query(None),
     gw_end: int | None = Query(None),
+    formation: str | None = Query(None, description="Force a specific formation, e.g. '4-4-2' (DEF-MID-FWD). Omit for the auto-optimal formation."),
 ):
     """Given an ARBITRARY 15 players (e.g. after a manual remove/replace edit
     in the UI), return their xP + the best lineup for that exact squad. No
@@ -196,5 +280,8 @@ def lineup_for_squad(
         if counts.get(pos, 0) != n:
             raise HTTPException(400, f"Invalid squad shape: {counts} (need {optimise.SQUAD_LIMITS})")
 
-    lineup = optimise.best_lineup(squad)
+    forced_formation = _parse_formation(formation) if formation else None
+    lineup = optimise.best_lineup(squad, formation=forced_formation)
+    if lineup is None:
+        raise HTTPException(400, f"Formation {formation!r} isn't feasible for this squad")
     return _serialize(row["run_id"], gw_start, gw_end, squad, lineup)

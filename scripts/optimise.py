@@ -52,38 +52,66 @@ def valid_formations():
     return formations
 
 
-def best_lineup(squad: pd.DataFrame, score_col: str = "xP") -> dict:
+def _lineup_for_formation(squad: pd.DataFrame, formation: dict, score_col: str) -> dict | None:
+    """Exact greedy XI for ONE fixed formation (players are interchangeable
+    within a position for this decision -- see module docstring). Returns
+    None if the squad doesn't have enough players in some position to fill
+    it -- in practice this can't happen for a real 15-man squad respecting
+    SQUAD_LIMITS (5 DEF/5 MID/3 FWD/2 GK always covers every valid formation's
+    max), but callers may pass an arbitrary/malformed squad, so it's checked
+    rather than assumed."""
+    starters = []
+    for pos, n in formation.items():
+        pos_players = squad[squad["position"] == pos].nlargest(n, score_col)
+        if len(pos_players) < n:
+            return None
+        starters.append(pos_players)
+    starters_df = pd.concat(starters)
+    total = starters_df[score_col].sum()
+    bench_df = squad[~squad.index.isin(starters_df.index)]
+    ranked = starters_df.sort_values(score_col, ascending=False)
+    captain = ranked.iloc[0]
+    vice = ranked.iloc[1]
+    bench_sorted = pd.concat([
+        bench_df[bench_df["position"] != "GK"].sort_values(score_col, ascending=False),
+        bench_df[bench_df["position"] == "GK"],
+    ])
+    return dict(
+        formation=formation, starters=starters_df, bench=bench_sorted,
+        captain=captain["name"], vice_captain=vice["name"],
+        expected_points=total,
+        expected_points_with_captain=total + captain[score_col],
+    )
+
+
+def best_lineup(squad: pd.DataFrame, score_col: str = "xP", formation: dict | None = None) -> dict | None:
     """squad: one row per player (15 rows), columns include position, name,
-    team, score_col. Returns starters, bench, formation, captain, vice."""
+    team, score_col. Returns starters, bench, formation, captain, vice.
+
+    formation: if given (e.g. {"GK":1,"DEF":4,"MID":3,"FWD":3}), forces that
+    EXACT formation instead of searching every valid one -- still the exact
+    (not approximate) best XI for that one formation, just skips the "which
+    formation scores most" search across all of them. Lets the frontend offer
+    a formation picker without duplicating this greedy logic in JS -- one
+    authoritative implementation, same as every other "transparency" number
+    in this project (see BUILD_SPEC.md's conventions). Returns None if the
+    formation itself is invalid (wrong total, outside FORMATION_LIMITS) or
+    infeasible for this specific squad."""
+    if formation is not None:
+        if sum(formation.values()) != STARTING_XI:
+            return None
+        for pos, (lo, hi) in FORMATION_LIMITS.items():
+            if not (lo <= formation.get(pos, 0) <= hi):
+                return None
+        return _lineup_for_formation(squad, formation, score_col)
+
     best = None
-    for formation in valid_formations():
-        starters = []
-        ok = True
-        for pos, n in formation.items():
-            pos_players = squad[squad["position"] == pos].nlargest(n, score_col)
-            if len(pos_players) < n:
-                ok = False
-                break
-            starters.append(pos_players)
-        if not ok:
+    for f in valid_formations():
+        candidate = _lineup_for_formation(squad, f, score_col)
+        if candidate is None:
             continue
-        starters_df = pd.concat(starters)
-        total = starters_df[score_col].sum()
-        if best is None or total > best["expected_points"]:
-            bench_df = squad[~squad.index.isin(starters_df.index)]
-            ranked = starters_df.sort_values(score_col, ascending=False)
-            captain = ranked.iloc[0]
-            vice = ranked.iloc[1]
-            bench_sorted = pd.concat([
-                bench_df[bench_df["position"] != "GK"].sort_values(score_col, ascending=False),
-                bench_df[bench_df["position"] == "GK"],
-            ])
-            best = dict(
-                formation=formation, starters=starters_df, bench=bench_sorted,
-                captain=captain["name"], vice_captain=vice["name"],
-                expected_points=total,
-                expected_points_with_captain=total + captain[score_col],
-            )
+        if best is None or candidate["expected_points"] > best["expected_points"]:
+            best = candidate
     return best
 
 

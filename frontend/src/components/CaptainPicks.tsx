@@ -15,7 +15,7 @@ export default function CaptainPicks({ gw }: { gw?: number }) {
   return (
     <div className="mt-6">
       <h3 className="text-sm font-semibold text-slate-700 mb-2">Captain picks — GW{data.gw}</h3>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <PickTable
           title="Safest"
           icon={<Shield size={14} className="text-emerald-600" />}

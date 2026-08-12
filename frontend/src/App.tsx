@@ -14,14 +14,14 @@ const NAV = [
 
 function Nav() {
   return (
-    <nav className="border-b border-slate-200 bg-white">
-      <div className="max-w-5xl mx-auto flex gap-1 px-6">
+    <nav className="border-b border-slate-200 bg-white overflow-x-auto">
+      <div className="max-w-5xl mx-auto flex gap-1 px-3 sm:px-6 flex-nowrap w-max sm:w-auto">
         {NAV.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             className={({ isActive }) =>
-              `px-3 py-3 text-sm font-medium border-b-2 -mb-px ${
+              `px-2.5 sm:px-3 py-3 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
                 isActive
                   ? 'border-emerald-600 text-emerald-700'
                   : 'border-transparent text-slate-500 hover:text-slate-800'

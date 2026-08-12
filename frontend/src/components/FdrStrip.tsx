@@ -1,7 +1,9 @@
 import type { Fixture } from '../api/types'
 
 // Real FPL FDR color convention: 1 (easiest) green through 5 (hardest) red.
-const FDR_COLORS: Record<number, string> = {
+// Exported so other components (e.g. PlayerDetailModal's fixture table) reuse
+// the exact same convention instead of redefining their own color scale.
+export const FDR_COLORS: Record<number, string> = {
   1: 'bg-emerald-500', 2: 'bg-emerald-300', 3: 'bg-slate-300', 4: 'bg-orange-400', 5: 'bg-red-500',
 }
 

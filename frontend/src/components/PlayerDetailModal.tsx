@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import PlayerShirt from './PlayerShirt'
+import { FDR_COLORS } from './FdrStrip'
 import type { Player, XpBreakdown, Fixture } from '../api/types'
 
 const BREAKDOWN_LABELS: Record<keyof XpBreakdown, string> = {
@@ -15,28 +16,25 @@ const BREAKDOWN_LABELS: Record<keyof XpBreakdown, string> = {
   bonus_pts: 'Bonus',
 }
 
-// Per-gameweek card color band, keyed off xP magnitude -- same rough banding
-// as the screenshot reference (darker green = more points), not tied to any
-// fixed scale since xP range varies a lot by position.
-function gwCardColor(xp: number): string {
-  if (xp >= 9) return 'bg-emerald-700 text-white'
-  if (xp >= 6) return 'bg-emerald-500 text-white'
-  if (xp >= 3) return 'bg-emerald-300 text-emerald-950'
-  if (xp > 0) return 'bg-emerald-100 text-emerald-900'
-  return 'bg-slate-100 text-slate-500'
+/** Text readable on both the light and dark ends of the FDR color scale
+ * (FDR_COLORS 1/2 are light greens, 3 is light slate, 4/5 are darker). */
+function fdrTextColor(difficulty: number): string {
+  return difficulty >= 4 ? 'text-white' : 'text-slate-900'
 }
 
-/** For a given team, gw -> "[H]OPP" / "[A]OPP" label -- same fixture data
- * PlayerScout already fetches for the FDR strip, just reshaped per-team-per-gw
- * instead of an ordered difficulty list. */
-function buildOpponentLabel(fixtures: Fixture[], team: string, gw: number): string | null {
+/** For a given team+gw, find the matching fixture and return it from that
+ * team's own perspective: opponent label, home/away, and FDR (the difficulty
+ * of THIS fixture for THIS team, i.e. home_difficulty if they're home). Same
+ * fixture data PlayerScout already fetches for its FDR strip. */
+function fixtureFor(fixtures: Fixture[], team: string, gw: number): { oppLabel: string; difficulty: number } | null {
   const match = fixtures.find(
     (f) => f.gw === gw && (f.home_team === team || f.away_team === team)
   )
   if (!match) return null
   const isHome = match.home_team === team
   const opponent = isHome ? match.away_team : match.home_team
-  return `[${isHome ? 'H' : 'A'}]${opponent.slice(0, 3).toUpperCase()}`
+  const difficulty = isHome ? match.home_difficulty : match.away_difficulty
+  return { oppLabel: `${isHome ? 'H' : 'A'} ${opponent.slice(0, 3).toUpperCase()}`, difficulty }
 }
 
 export default function PlayerDetailModal({ player, fixtures, onClose }: {
@@ -64,12 +62,12 @@ export default function PlayerDetailModal({ player, fixtures, onClose }: {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between p-5 border-b border-slate-100">
+        <div className="flex items-start justify-between p-4 sm:p-5 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <PlayerShirt player={player} size={48} />
+            <PlayerShirt player={player} size={40} />
             <div>
-              <h2 className="text-xl font-bold text-slate-900">{player.name}</h2>
-              <div className="flex gap-4 mt-1">
+              <h2 className="text-lg sm:text-xl font-bold text-slate-900">{player.name}</h2>
+              <div className="flex gap-3 sm:gap-4 mt-1 flex-wrap">
                 <Badge label="POS" value={player.position} />
                 <Badge label="PRICE" value={`£${player.price.toFixed(1)}m`} />
                 <Badge label="TEAM" value={player.team} />
@@ -85,26 +83,47 @@ export default function PlayerDetailModal({ player, fixtures, onClose }: {
           </button>
         </div>
 
-        {/* Per-gameweek cards */}
+        {/* Per-gameweek fixtures table -- fixture cell colored by FDR (real FPL
+            1=easiest green .. 5=hardest red convention, see FdrStrip.tsx),
+            xP column explicitly labelled so the number's meaning is unambiguous. */}
         {gameweeks.length > 0 && (
-          <div className="grid gap-2 p-5 pb-2" style={{ gridTemplateColumns: `repeat(${Math.min(gameweeks.length, 5)}, minmax(0, 1fr))` }}>
-            {gameweeks.map((g) => {
-              const oppLabel = buildOpponentLabel(fixtures, player.team, g.gw)
-              return (
-                <div key={g.gw} className="rounded-xl bg-slate-50 border border-slate-100 p-2.5 text-center">
-                  <p className="text-[11px] font-medium text-slate-500 mb-1.5">GW{g.gw}</p>
-                  <div className={`rounded-lg py-2.5 text-lg font-bold ${gwCardColor(g.xP)}`}>
-                    {g.xP.toFixed(1)}
-                  </div>
-                  {oppLabel && <p className="text-[11px] text-slate-400 mt-1.5">{oppLabel}</p>}
-                </div>
-              )
-            })}
+          <div className="px-5 pt-5 pb-2">
+            <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="text-left font-semibold text-slate-600 px-3 py-2">GW</th>
+                  <th className="text-left font-semibold text-slate-600 px-3 py-2">Fixture (FDR)</th>
+                  <th className="text-right font-semibold text-slate-600 px-3 py-2">
+                    xP <span className="font-normal text-slate-400">(projected points)</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {gameweeks.map((g, i) => {
+                  const fx = fixtureFor(fixtures, player.team, g.gw)
+                  return (
+                    <tr key={g.gw} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
+                      <td className="px-3 py-2 text-slate-500">{g.gw}</td>
+                      <td className="px-3 py-2">
+                        {fx ? (
+                          <span className={`inline-block rounded px-2 py-0.5 text-xs font-semibold ${FDR_COLORS[fx.difficulty] ?? 'bg-slate-200'} ${fdrTextColor(fx.difficulty)}`}>
+                            {fx.oppLabel}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right font-bold text-slate-900">{g.xP.toFixed(1)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
 
         {/* Historic stats + prediction breakdown */}
-        <div className="grid grid-cols-2 gap-5 p-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 p-5">
           <div>
             <p className="text-xs font-semibold text-slate-500 tracking-wide mb-3">HISTORIC STATS</p>
             <p className="text-[11px] text-slate-400 mb-2">2025-26 Premier League season</p>
