@@ -6,5 +6,13 @@
 # Replace <ip-with-dashes> below with your VM's public IP, dots -> dashes,
 # e.g. 143.47.28.10 -> 143-47-28-10
 35-252-212-174.sslip.io {
+    # HTTP/3 (QUIC, over UDP 443) disabled -- some networks/routers handle it
+    # inconsistently, which can surface to browsers as an SSL/cipher mismatch
+    # even though the underlying TLS 1.2/1.3-over-TCP cert is perfectly valid.
+    # Plain HTTP/1.1 + HTTP/2 over TCP is more universally reliable for a
+    # small personal-use API like this.
+    servers {
+        protocols h1 h2
+    }
     reverse_proxy localhost:8000
 }
