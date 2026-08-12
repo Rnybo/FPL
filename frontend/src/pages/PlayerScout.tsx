@@ -47,7 +47,7 @@ function fieldValue(p: Player, field: SortField): number | string {
     const gw = Number(field.slice(3))
     return p.gameweeks?.find((g) => g.gw === gw)?.xP ?? 0
   }
-  return p.breakdown?.[field] ?? 0
+  return p.breakdown?.[field as keyof XpBreakdown] ?? 0
 }
 
 export default function PlayerScout() {

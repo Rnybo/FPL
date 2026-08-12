@@ -63,6 +63,14 @@ function renderWithClient(ui: React.ReactElement) {
 function mockHooks(overrides = {}) {
   vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
   vi.spyOn(hooks, 'useOptimalSquad').mockReturnValue({ data: mockOptimal(overrides), isLoading: false, isError: false } as never)
+  // Mocked at the hook level, not via client.apiGet, so it's unaffected by the
+  // apiGet spies some tests below set up to catch the optimizer's own direct
+  // fetch call -- those would otherwise feed this hook squad-shaped data instead
+  // (see docs/GOTCHAS.md-style note: this is exactly that kind of silent-overwrite
+  // trap, just via a shared mock instead of a shared dataframe column).
+  vi.spyOn(hooks, 'useCaptainPicks').mockReturnValue({
+    data: { gw: 1, safe: [], haul: [] }, isLoading: false, error: null,
+  } as never)
 }
 
 describe('SquadBuilder', () => {

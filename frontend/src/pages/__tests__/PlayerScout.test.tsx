@@ -125,7 +125,7 @@ describe('PlayerScout', () => {
     renderWithClient(<PlayerScout />)
     const user = userEvent.setup()
 
-    const [fromInput, toInput] = screen.getAllByRole('spinbutton')
+    const [, toInput] = screen.getAllByRole('spinbutton')
     await user.clear(toInput)
     await user.type(toInput, '5')
 
