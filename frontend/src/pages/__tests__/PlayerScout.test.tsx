@@ -19,6 +19,15 @@ const MOCK_PLAYERS = {
       // Deliberately backloaded -- lowest total-xP rank overall, but NOT lowest
       // in every individual gameweek, so per-GW sort tests are meaningful.
       gameweeks: [{ gw: 1, xP: 1.0 }, { gw: 2, xP: 1.0 }, { gw: 3, xP: 4.2 }],
+      last_season_stats: {
+        games: 38, starts: 34, start_pct: 89, mean_points: 6.29,
+        max_points: 16, min_points: 0, variance: 24.21, std_dev: 4.92,
+      },
+      last_season_breakdown: {
+        games: [{ gw: 1, points: 13 }, { gw: 2, points: 2 }, { gw: 3, points: 9 }],
+        percentile_averages: { top25: 13, top50: 11, top75: 8, overall: 8 },
+        points_by_component: { appearance: 6, goals: 12, assists: 3, clean_sheet: 0, defcon: 0, bonus: 3, cards: -1, conceded: 0, saves: 0, penalties: 0 },
+      },
     },
     {
       player_id: 2, name: 'Mohamed Salah', position: 'MID' as const, team: 'Liverpool', price: 13.0, xP: 5.8,
@@ -118,6 +127,80 @@ describe('PlayerScout', () => {
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).queryByText('Clean sheet')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('Saves')).not.toBeInTheDocument()
+  })
+
+  it('switching to the "Last season stats" tab shows real scored-points stats, not the prediction breakdown', async () => {
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Erling Haaland'))
+    const dialog = screen.getByRole('dialog')
+
+    // Default view: prediction breakdown, no last-season numbers yet.
+    expect(within(dialog).getByText('Goals')).toBeInTheDocument()
+    expect(within(dialog).queryByText('89%')).not.toBeInTheDocument()
+
+    await user.click(within(dialog).getByText(/last season stats/i))
+
+    expect(within(dialog).queryByText('Goals')).not.toBeInTheDocument()
+    expect(within(dialog).getByText('89%')).toBeInTheDocument() // start_pct rounded
+    expect(within(dialog).getByText('34/38 games')).toBeInTheDocument()
+    expect(within(dialog).getByText('Ceiling')).toBeInTheDocument()
+    expect(within(dialog).getByText('16')).toBeInTheDocument() // max_points
+    expect(within(dialog).getByText('Floor')).toBeInTheDocument()
+    expect(within(dialog).getByText('0')).toBeInTheDocument() // min_points
+    // Mean/variance/std_dev cards are gone -- replaced by the chart (see
+    // below) per direct feedback that they weren't intuitive.
+    expect(within(dialog).queryByText('Variance')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Std. dev')).not.toBeInTheDocument()
+  })
+
+  it('the last-season chart renders with a real breakdown -- headers/labels only, not chart internals', async () => {
+    // recharts' ResponsiveContainer measures the real DOM to size itself,
+    // which jsdom can't do (it reports 0 width), so recharts correctly
+    // declines to render bars/reference-lines/etc. inside it -- a well-known
+    // jsdom+recharts limitation, not a bug here. What CAN be verified: the
+    // component actually received breakdown data and rendered its text
+    // labels/headers, i.e. it took the "has a chart" branch, not the
+    // "not enough starts" fallback branch.
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Erling Haaland'))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByText(/last season stats/i))
+
+    expect(within(dialog).getByText(/points per game started/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/where his points came from/i)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/not enough starts/i)).not.toBeInTheDocument()
+  })
+
+  it('a player with last_season_stats but an empty breakdown shows the "not enough starts" fallback', async () => {
+    const playersWithEmptyBreakdown = {
+      ...MOCK_PLAYERS,
+      players: MOCK_PLAYERS.players.map((p) =>
+        p.name === 'Erling Haaland' ? { ...p, last_season_breakdown: null } : p
+      ),
+    }
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: playersWithEmptyBreakdown, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Erling Haaland'))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByText(/last season stats/i))
+    // Still has last_season_stats (89% started etc.), just no chart data.
+    expect(within(dialog).getByText('89%')).toBeInTheDocument()
+    expect(within(dialog).getByText(/not enough starts/i)).toBeInTheDocument()
+  })
+
+  it('a player with no last_season_stats shows a clear empty state, not a crash', async () => {
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Mohamed Salah')) // no last_season_stats in this fixture
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByText(/last season stats/i))
+    expect(within(dialog).getByText(/no 2025-26 data/i)).toBeInTheDocument()
   })
 
   it('passes gwStart/gwEnd from the inputs to usePlayers', async () => {

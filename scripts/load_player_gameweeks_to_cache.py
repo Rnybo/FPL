@@ -25,7 +25,15 @@ fixtures.csv 'id' directly (verified), so fixture_id = season_code(season) *
 100000 + fixture -- same formula used in load_fixtures_to_cache.py.
 
 Note: 2021-22 has no expected_goals/expected_assists columns (FPL added xG/xA
-later) -- handled by storing NULL for that season rather than crashing.
+later) -- handled by storing NULL for that season rather than crashing. Same
+handling for `starts` (present 2022-23 onward, NULL for 2021-22) and for
+`tackles`/`clearances_blocks_interceptions`/`recoveries`/`defensive_contribution`
+(the DEFCON mechanic -- present only from 2025-26 onward, NULL before that).
+These were already columns in the schema (populated for the CURRENT season by
+fetch_live_gameweek_stats.py) but this historical loader never touched them --
+found via a real reconstruction mismatch: a defender's real total_points was
+consistently 2 higher than goals+assists+CS+bonus+appearance alone could
+explain, which is exactly DEFCON_POINTS.
 """
 import sqlite3
 from pathlib import Path
@@ -67,6 +75,8 @@ def load_season(conn, season: str, player_cache: dict):
     team_ids = team_id_lookup(conn, season)
     code = season_code(season)
     has_xg = "expected_goals" in df.columns
+    has_starts = "starts" in df.columns
+    has_defcon = "defensive_contribution" in df.columns
 
     gw_rows = []
     season_prices = {}  # player_id -> [first_value, last_value]
@@ -77,6 +87,11 @@ def load_season(conn, season: str, player_cache: dict):
         value = row.value / 10.0 if pd.notna(row.value) else None
         xg = float(row.expected_goals) if has_xg and pd.notna(row.expected_goals) else None
         xa = float(row.expected_assists) if has_xg and pd.notna(row.expected_assists) else None
+        starts = int(row.starts) if has_starts and pd.notna(row.starts) else None
+        tackles = int(row.tackles) if has_defcon and pd.notna(row.tackles) else None
+        cbi = int(row.clearances_blocks_interceptions) if has_defcon and pd.notna(row.clearances_blocks_interceptions) else None
+        recoveries = int(row.recoveries) if has_defcon and pd.notna(row.recoveries) else None
+        defcon = int(row.defensive_contribution) if has_defcon and pd.notna(row.defensive_contribution) else None
 
         gw_rows.append((
             pid, fixture_id, season, int(row.GW), int(row.minutes),
@@ -86,7 +101,7 @@ def load_season(conn, season: str, player_cache: dict):
             int(row.yellow_cards), int(row.red_cards), int(row.own_goals),
             int(row.bonus), int(row.bps), int(row.total_points),
             float(row.ict_index), float(row.influence), float(row.creativity), float(row.threat),
-            int(bool(row.was_home)), value,
+            int(bool(row.was_home)), value, starts, tackles, cbi, recoveries, defcon,
         ))
 
         season_prices.setdefault(pid, [value, value])
@@ -105,8 +120,9 @@ def load_season(conn, season: str, player_cache: dict):
            (player_id, fixture_id, season_id, gw, minutes, goals, assists, xg, xa,
             clean_sheet, goals_conceded, saves, penalties_saved, penalties_missed,
             yellow_cards, red_cards, own_goals, bonus, bps, total_points,
-            ict_index, influence, creativity, threat, was_home, price_at_time)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ict_index, influence, creativity, threat, was_home, price_at_time, starts,
+            tackles, clearances_blocks_interceptions, recoveries, defensive_contribution)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         gw_rows,
     )
 

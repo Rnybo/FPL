@@ -29,8 +29,55 @@ def test_players_returns_real_data():
     data = resp.json()
     assert len(data["players"]) > 0
     first = data["players"][0]
-    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic"}
+    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_breakdown"}
     assert first["position"] in {"GK", "DEF", "MID", "FWD"}
+
+
+def test_players_last_season_stats_are_internally_consistent():
+    """mean/max/min/variance/start_pct of REAL scored points, last complete
+    season -- must be sane relative to each other for any player who
+    actually has last-season data (a brand-new signing legitimately has
+    None -- see players.py's docstring for why)."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"][:50]:
+        s = p["last_season_stats"]
+        if s is None:
+            continue
+        checked_any = True
+        assert s["min_points"] <= s["mean_points"] <= s["max_points"]
+        assert s["games"] > 0
+        assert 0 <= s["starts"] <= s["games"]
+        assert s["start_pct"] == pytest.approx(100 * s["starts"] / s["games"], abs=0.1)
+        assert s["variance"] >= 0
+        assert s["std_dev"] == pytest.approx(s["variance"] ** 0.5, abs=0.05)
+    assert checked_any, "no player in the sample had last-season data -- test wasn't exercised"
+
+
+def test_players_last_season_breakdown_is_internally_consistent():
+    """Real per-game points (for games where the player actually STARTED --
+    see load_player_gameweeks_to_cache.py's docstring on why `starts` is
+    used, not `minutes > 0`), percentile averages, and points-by-component --
+    all reconstructed from raw stats, must agree with each other."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"][:50]:
+        b = p["last_season_breakdown"]
+        if b is None:
+            continue
+        checked_any = True
+        games = b["games"]
+        assert len(games) > 0
+        pct = b["percentile_averages"]
+        # Best-25% average must be >= best-50% >= best-75% >= overall --
+        # each wider slice necessarily includes the previous slice's games
+        # plus more (weaker) ones, so its average can't be higher.
+        assert pct["top25"] >= pct["top50"] >= pct["top75"] >= pct["overall"]
+        # The component breakdown must sum to (very nearly) games * overall
+        # average -- same reconciliation principle as the xP breakdown.
+        component_sum = sum(b["points_by_component"].values())
+        assert component_sum == pytest.approx(len(games) * pct["overall"], abs=len(games) * 0.5)
+    assert checked_any, "no player in the sample had a last-season breakdown -- test wasn't exercised"
 
 
 def test_players_gameweeks_sum_to_headline_xp():
@@ -191,3 +238,25 @@ def test_squad_optimal_returns_starter_and_bench_ids():
     assert set(starter_ids).isdisjoint(bench_ids)
     squad_ids = {p["player_id"] for p in data["squad"]}
     assert set(starter_ids) | set(bench_ids) == squad_ids
+
+
+def test_captain_picks_returns_fixture_and_fdr_context():
+    """haul% alone doesn't say why it's high -- fixture+FDR must come back
+    alongside it, see captain_simulation.py's top_captain_picks docstring."""
+    resp = client.get("/api/captain/picks?top_k=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["gw"] is not None
+    assert len(data["safe"]) == 3
+    assert len(data["haul"]) == 3
+    for pick in data["safe"] + data["haul"]:
+        assert set(pick.keys()) == {"name", "fixture", "fdr", "mean", "p10", "p90", "p_haul", "p_blank"}
+        assert 1 <= pick["fdr"] <= 5
+        assert pick["fixture"]  # non-empty string
+        assert pick["p10"] <= pick["mean"] <= pick["p90"]
+
+
+def test_captain_picks_explicit_gw_matches_requested_gw():
+    resp = client.get("/api/captain/picks?gw=1&top_k=1")
+    assert resp.status_code == 200
+    assert resp.json()["gw"] == 1

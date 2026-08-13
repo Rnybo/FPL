@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { X } from 'lucide-react'
 import PlayerShirt from './PlayerShirt'
 import { FDR_COLORS } from './FdrStrip'
+import LastSeasonChart from './LastSeasonChart'
 import type { Player, XpBreakdown, Fixture } from '../api/types'
 
 const BREAKDOWN_LABELS: Record<keyof XpBreakdown, string> = {
@@ -42,6 +44,7 @@ export default function PlayerDetailModal({ player, fixtures, onClose }: {
   fixtures: Fixture[]
   onClose: () => void
 }) {
+  const [view, setView] = useState<'prediction' | 'lastSeason'>('prediction')
   const gameweeks = player.gameweeks ?? []
   const breakdownEntries = player.breakdown
     ? (Object.entries(player.breakdown) as [keyof XpBreakdown, number][])
@@ -122,49 +125,130 @@ export default function PlayerDetailModal({ player, fixtures, onClose }: {
           </div>
         )}
 
-        {/* Historic stats + prediction breakdown */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 p-5">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 tracking-wide mb-3">HISTORIC STATS</p>
-            <p className="text-[11px] text-slate-400 mb-2">2025-26 Premier League season</p>
-            {player.historic ? (
-              <div className="space-y-2">
-                <StatRow label="Mins" value={player.historic.minutes} />
-                <StatRow label="Goals" value={player.historic.goals} />
-                <StatRow label="Assists" value={player.historic.assists} />
-                <StatRow label="xG" value={player.historic.xg.toFixed(2)} />
-                <StatRow label="xA" value={player.historic.xa.toFixed(2)} />
-              </div>
-            ) : (
-              <p className="text-xs text-slate-400">No 2025-26 data (new to the Premier League).</p>
-            )}
-          </div>
-
-          <div>
-            <p className="text-xs font-semibold text-slate-500 tracking-wide mb-3">
-              BREAKDOWN OF PREDICTIONS
-            </p>
-            <p className="text-[11px] text-slate-400 mb-2">
-              GW{gameweeks[0]?.gw ?? '?'}{gameweeks.length > 1 ? `-${gameweeks[gameweeks.length - 1].gw}` : ''}
-            </p>
-            {breakdownEntries.length > 0 ? (
-              <div className="space-y-2">
-                {breakdownEntries.map(([key, value]) => (
-                  <StatRow key={key} label={BREAKDOWN_LABELS[key]}
-                    value={`${value >= 0 ? '+' : ''}${value.toFixed(2)}`}
-                    negative={value < 0} />
-                ))}
-                <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-baseline">
-                  <span className="text-sm font-semibold text-slate-900">Total xP</span>
-                  <span className="text-base font-bold text-emerald-700">{player.xP.toFixed(2)}</span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-slate-400">No meaningful contribution from any component.</p>
-            )}
-          </div>
+        {/* View switch: this window's prediction breakdown, or last season's
+            real statistical profile (mean/max/min/variance/start% of ACTUAL
+            scored points, not xP -- see players.py's last_season_stats). */}
+        <div className="flex gap-1 px-5 pt-4">
+          <TabButton active={view === 'prediction'} onClick={() => setView('prediction')}>
+            This window
+          </TabButton>
+          <TabButton active={view === 'lastSeason'} onClick={() => setView('lastSeason')}>
+            Last season stats
+          </TabButton>
         </div>
+
+        {view === 'prediction' ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 p-5">
+            <div>
+              <p className="text-xs font-semibold text-slate-500 tracking-wide mb-3">HISTORIC STATS</p>
+              <p className="text-[11px] text-slate-400 mb-2">2025-26 Premier League season</p>
+              {player.historic ? (
+                <div className="space-y-2">
+                  <StatRow label="Mins" value={player.historic.minutes} />
+                  <StatRow label="Goals" value={player.historic.goals} />
+                  <StatRow label="Assists" value={player.historic.assists} />
+                  <StatRow label="xG" value={player.historic.xg.toFixed(2)} />
+                  <StatRow label="xA" value={player.historic.xa.toFixed(2)} />
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">No 2025-26 data (new to the Premier League).</p>
+              )}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-500 tracking-wide mb-3">
+                BREAKDOWN OF PREDICTIONS
+              </p>
+              <p className="text-[11px] text-slate-400 mb-2">
+                GW{gameweeks[0]?.gw ?? '?'}{gameweeks.length > 1 ? `-${gameweeks[gameweeks.length - 1].gw}` : ''}
+              </p>
+              {breakdownEntries.length > 0 ? (
+                <div className="space-y-2">
+                  {breakdownEntries.map(([key, value]) => (
+                    <StatRow key={key} label={BREAKDOWN_LABELS[key]}
+                      value={`${value >= 0 ? '+' : ''}${value.toFixed(2)}`}
+                      negative={value < 0} />
+                  ))}
+                  <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-baseline">
+                    <span className="text-sm font-semibold text-slate-900">Total xP</span>
+                    <span className="text-base font-bold text-emerald-700">{player.xP.toFixed(2)}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">No meaningful contribution from any component.</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <LastSeasonStatsView stats={player.last_season_stats} breakdown={player.last_season_breakdown} />
+        )}
       </div>
+    </div>
+  )
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-xs font-semibold px-3 py-1.5 rounded-md ${
+        active ? 'bg-emerald-100 text-emerald-800' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// Real scored points last season -- see backend's last_season_breakdown
+// docstring for the full reconstruction/validation notes. Mean/max/min are
+// simple enough to keep as numbers; variance/std_dev were dropped per
+// direct feedback that they weren't intuitive, replaced with the chart
+// below (the gap between the "best 25%" and "overall" reference lines IS
+// the variance, shown visually instead of as an abstract number).
+function LastSeasonStatsView({ stats, breakdown }: {
+  stats: Player['last_season_stats']
+  breakdown: Player['last_season_breakdown']
+}) {
+  if (!stats) {
+    return (
+      <div className="p-5">
+        <p className="text-xs text-slate-400">No 2025-26 data (new to the Premier League).</p>
+      </div>
+    )
+  }
+  return (
+    <div className="p-5">
+      <p className="text-[11px] text-slate-400 mb-4">
+        Real points actually scored, 2025-26 Premier League season -- {stats.games} games
+      </p>
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        <StatCard label="Started" value={stats.start_pct != null ? `${stats.start_pct.toFixed(0)}%` : '—'}
+          sub={stats.starts != null ? `${stats.starts}/${stats.games} games` : undefined} />
+        <StatCard label="Ceiling" value={stats.max_points} sub="best game" highlight="emerald" />
+        <StatCard label="Floor" value={stats.min_points} sub="worst game" highlight={stats.min_points === 0 ? 'red' : undefined} />
+      </div>
+      {breakdown && breakdown.games.length > 0 ? (
+        <LastSeasonChart breakdown={breakdown} />
+      ) : (
+        <p className="text-xs text-slate-400">Not enough starts last season for a chart.</p>
+      )}
+    </div>
+  )
+}
+
+function StatCard({ label, value, sub, highlight }: {
+  label: string
+  value: string | number
+  sub?: string
+  highlight?: 'emerald' | 'red'
+}) {
+  const valueColor = highlight === 'emerald' ? 'text-emerald-700' : highlight === 'red' ? 'text-red-600' : 'text-slate-900'
+  return (
+    <div className="border border-slate-100 rounded-lg p-3">
+      <p className="text-[10px] text-slate-400 tracking-wide uppercase">{label}</p>
+      <p className={`text-lg font-bold ${valueColor}`}>{value}</p>
+      {sub && <p className="text-[10px] text-slate-400 mt-0.5">{sub}</p>}
     </div>
   )
 }

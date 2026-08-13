@@ -27,6 +27,48 @@ export interface HistoricStats {
   xa: number
 }
 
+export interface LastSeasonStats {
+  games: number
+  starts: number | null
+  start_pct: number | null
+  mean_points: number
+  max_points: number
+  min_points: number
+  variance: number
+  std_dev: number
+}
+
+export interface LastSeasonGamePoints {
+  gw: number
+  points: number
+}
+
+export interface LastSeasonPercentileAverages {
+  top25: number
+  top50: number
+  top75: number
+  overall: number
+}
+
+export interface LastSeasonPointsByComponent {
+  appearance: number
+  goals: number
+  assists: number
+  clean_sheet: number
+  defcon: number
+  bonus: number
+  cards: number
+  conceded: number
+  saves: number
+  penalties: number
+}
+
+export interface LastSeasonBreakdown {
+  games: LastSeasonGamePoints[]
+  percentile_averages: LastSeasonPercentileAverages
+  points_by_component: LastSeasonPointsByComponent
+}
+
 export interface Player {
   player_id: number
   name: string
@@ -38,6 +80,8 @@ export interface Player {
   breakdown?: XpBreakdown
   gameweeks?: GameweekXp[]
   historic?: HistoricStats | null
+  last_season_stats?: LastSeasonStats | null
+  last_season_breakdown?: LastSeasonBreakdown | null
 }
 
 export interface PlayersResponse {
@@ -93,6 +137,8 @@ export interface OptimalSquad {
 
 export interface CaptainPick {
   name: string
+  fixture: string
+  fdr: number
   mean: number
   p10: number
   p90: number

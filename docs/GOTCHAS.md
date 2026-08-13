@@ -881,3 +881,32 @@ heavily right now. This does not by itself fully explain the earlier ~70-75% agg
 gap against the external tool, but it's a genuine, mechanistically-motivated, validated piece of
 that puzzle that the earlier "well-calibrated" conclusion had missed by not specifically checking
 for it -- the user's pushback here was warranted and led to a real fix, not just a reassurance.
+
+
+## RESOLVED: calibration multiplier drift after Layer 3 changes (goals -5.2%, assists -9.8% under-predicted again)
+Re-ran backtest_report.py end-to-end (per user request) after several Layer 3 changes since
+the multipliers were last fit (is_transfer, ewm_one_earlier, season-boundary weighting) --
+those all shift expected_minutes, which lambda_goal/lambda_assist multiply through directly,
+so the hardcoded CALIBRATION_MULTIPLIER_GOAL/ASSIST (fit once, not auto-refit) had drifted
+stale: goals -5.2% under, assists -9.8% under, price-tier Q4 bias -0.109 -- most of the way
+back to the original pre-fix numbers.
+
+Refit via the same root-finding approach as the DefCon fix: computed the EXACT pre-multiplier
+predicted totals (4361.45 goals, 3165.11 assists) directly from the pipeline, not backed out
+from rounded print output, then new_multiplier = actual_total / pre_multiplier_total.
+CALIBRATION_MULTIPLIER_GOAL 1.164->1.228, CALIBRATION_MULTIPLIER_ASSIST 1.381->1.531. No
+duplication fix needed this time -- predict_upcoming.py already imports these constants from
+fit_player_involvement.py (l2.CALIBRATION_MULTIPLIER_GOAL/ASSIST) rather than hardcoding its
+own copy, so the live path picked up the fix automatically.
+
+**Result**: goals -5.2%->-1.1%, assists -9.8%->-2.1%, overall bias -0.021->-0.005, price-tier
+Q4 bias -0.109->-0.071 (back in the previously-documented -0.05 to -0.07 range). Same honest
+trade-off as the original fix: pooled MAE 0.999->1.005 (slightly worse -- correcting a
+systematic bias adds a little variance). 53 backend tests still pass. Retrained + regenerated
+live 2026-27 predictions (model_run_id=72).
+
+**Lesson**: any hardcoded calibration constant fit from a point-in-time total/total ratio will
+drift whenever an upstream layer changes the inputs it was calibrated against (expected_minutes
+here, same mechanism as this file's earlier DefCon multiplier). Worth re-running
+backtest_report.py's component-calibration check after ANY Layer 3 change, not just Layer 2/4a
+ones, since Layer 3 output feeds directly into these multipliers' correctness.

@@ -233,3 +233,11 @@ CREATE TABLE IF NOT EXISTS captain_sim_inputs (
     FOREIGN KEY (player_id) REFERENCES players(player_id),
     FOREIGN KEY (fixture_id) REFERENCES fixtures(fixture_id)
 );
+
+-- True "started the match" flag from source data (merged_gw.csv's own `starts`
+-- column, added by FPL's API partway through history -- NULL for 2021-22,
+-- which predates it, same handling as xg/xa for that season). Previously only
+-- `minutes` was persisted, which can't distinguish "started, subbed at 30'"
+-- from "never started, came on as a sub" -- exactly the distinction needed
+-- for a real start-percentage stat (see docs re: captaincy model improvements).
+ALTER TABLE player_gameweek_stats ADD COLUMN starts INTEGER;

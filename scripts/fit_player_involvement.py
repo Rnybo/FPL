@@ -44,8 +44,8 @@ ALL_SEASONS = ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]
 # actually good at, rather than compromising both with one knob.
 BLEND_WEIGHT_GOAL = 0.6
 BLEND_WEIGHT_ASSIST = 0.6
-CALIBRATION_MULTIPLIER_GOAL = 5357 / 4601      # 1.164
-CALIBRATION_MULTIPLIER_ASSIST = 4847 / 3510    # 1.381
+CALIBRATION_MULTIPLIER_GOAL = 5357 / 4361      # 1.228 (refit 2026-08-13 -- see GOTCHAS.md,
+CALIBRATION_MULTIPLIER_ASSIST = 4847 / 3165    # 1.531  "calibration multiplier drift" entry)
 
 # PRICE SIGNAL (added via user-prompted iteration -- see docs/GOTCHAS.md): FPL's
 # own pricing reflects market expectations of quality (transfer fee, reputation,
