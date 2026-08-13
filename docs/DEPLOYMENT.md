@@ -23,10 +23,13 @@ This does, in order:
 1. `git add -A`, commit (skipped if nothing changed), `git push`
 2. SSH into the GCP VM, `git pull`, `docker compose up -d --build` (only
    rebuilds layers that actually changed -- fast if it's just Python code)
-3. `vercel --prod --yes` from `frontend/` -- rebuilds and redeploys, the
+3. Runs `ensure_schema.py` inside the container -- applies any schema
+   changes (new tables/columns) that only ever landed locally. See "Database
+   schema drift" below for why this exists and what it does NOT cover.
+4. `vercel --prod --yes` from `frontend/` -- rebuilds and redeploys, the
    production alias (`frontend-six-orcin-32.vercel.app`) stays the same
    across deploys even though the underlying deployment URL changes each time
-4. Curls `/api/health` on the backend to confirm it's actually up afterward
+5. Curls `/api/health` on the backend to confirm it's actually up afterward
 
 Takes 1-2 minutes if the Docker image cache is warm (i.e. you didn't change
 `requirements.txt` or system deps), longer if a dependency changed.
@@ -77,6 +80,25 @@ whole deploy (this happened once already -- see git history around
   ```powershell
   gcloud compute scp data\fpl_cache.db fpl-backend:repo/data/fpl_cache.db --zone=us-west1-b
   gcloud compute ssh fpl-backend --zone=us-west1-b --command="cd repo && docker compose restart backend"
+  ```
+- **Database schema drift**: `ensure_schema.py` (step 3 above) closes most of
+  this gap automatically now -- it reads `schema.sql` (which IS in git) and
+  applies any `CREATE TABLE`/`ALTER TABLE ADD COLUMN` the VM's live `.db`
+  (which is NOT in git) is missing, every deploy, safely (idempotent). This
+  is exactly what caused a real production 500 once: `captain_simulation.py`
+  querying a `starts` column that existed locally but not on the VM, because
+  the schema change had no automatic path there.
+  **What it does NOT cover**: backfilling actual historical DATA that a new
+  column needs (e.g. adding a column is automatic, but populating it from
+  `data/raw/fpl_api/*/merged_gw.csv` -- also not in git -- still needs a
+  manual one-time transfer + script run, same as the original historical
+  load). If a future change needs new historical source data, not just a
+  new column, do this once:
+  ```powershell
+  foreach ($s in @("2021-22","2022-23","2023-24","2024-25","2025-26")) {
+    gcloud compute scp "data\raw\fpl_api\$s\merged_gw.csv" "fpl-backend:repo/data/raw/fpl_api/$s/merged_gw.csv" --zone=us-west1-b --quiet
+  }
+  gcloud compute ssh fpl-backend --zone=us-west1-b --command="docker cp repo/data/raw repo-backend-1:/srv/data/raw && docker exec repo-backend-1 python3 /srv/scripts/load_player_gameweeks_to_cache.py" --quiet
   ```
 - **CORS allowlist**: the backend's `ALLOWED_ORIGINS` env var (set in a `.env`
   file directly on the VM, not in git) is pinned to the current Vercel
