@@ -78,7 +78,10 @@ describe('SquadBuilder', () => {
     mockHooks()
     renderWithClient(<SquadBuilder />)
     expect(screen.getByText('15 / 15')).toBeInTheDocument()
-    expect(screen.getByText(/£14\.5m/)).toBeInTheDocument() // 100 - 85.5
+    // getAllByText, not getByText -- the new "Optimize with £Xm in the bank"
+    // button (squad is full + bank > 0 here) legitimately repeats this same
+    // figure in its own label now, alongside the bank badge.
+    expect(screen.getAllByText(/£14\.5m/).length).toBeGreaterThan(0) // 100 - 85.5
     expect(screen.getByText('Erling Haaland')).toBeInTheDocument()
     // getAllByText, not getByText -- these fixtures have no per-gameweek data
     // (gwXp ties at 0 for everyone), so the new captaincy draft plan's
@@ -138,6 +141,44 @@ describe('SquadBuilder', () => {
     expect(screen.queryByLabelText('Remove Erling Haaland')).not.toBeInTheDocument()
   })
 
+  it('"Build optimum team" is a no-op once the squad is full -- "Optimize with £Xm in the bank" appears instead and lets the optimizer freely improve it', async () => {
+    mockHooks() // FULL_SQUAD is already 15/15 with £14.5m in the bank
+    const apiSpy = vi.spyOn(client, 'apiGet').mockResolvedValue(mockOptimal({ squad: FULL_SQUAD }) as never)
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    // The new button only appears when there's actually spare bank to spend --
+    // this is the real gap: "Build optimum team" alone can't do anything
+    // useful here since it locks every one of the 15 filled players.
+    const optimizeButton = screen.getByText(/optimize with £14\.5m in the bank/i)
+    await user.click(optimizeButton)
+
+    expect(apiSpy).toHaveBeenCalled()
+    const calledUrl = apiSpy.mock.calls.map((c) => c[0] as string).find((u) => u.includes('/api/squad/optimal'))!
+    // Nothing was ever explicitly locked (lock mode never used this session) --
+    // so it's free to reconsider the WHOLE squad, not force any of the 15 in.
+    expect(calledUrl).not.toContain('locked=')
+  })
+
+  it('"Optimize with £Xm in the bank" respects players locked earlier via lock mode, even after switching back to Optimal', async () => {
+    mockHooks()
+    const apiSpy = vi.spyOn(client, 'apiGet').mockResolvedValue(mockOptimal({ squad: FULL_SQUAD }) as never)
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    // Lock Haaland in lock mode, then switch back to Optimal -- lockedIds
+    // persists across the toggle (only Reset/loading a new squad clears it).
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+    await user.click(screen.getByLabelText('Lock Erling Haaland'))
+    await user.click(screen.getByRole('switch', { name: /toggle lock mode/i })) // back to Optimal
+
+    await user.click(screen.getByText(/optimize with £14\.5m in the bank/i))
+
+    expect(apiSpy).toHaveBeenCalled()
+    const calledUrl = apiSpy.mock.calls.map((c) => c[0] as string).find((u) => u.includes('/api/squad/optimal'))!
+    expect(calledUrl).toContain('locked=13') // Haaland's id, still respected
+  })
+
   it('"Build optimum team" locks currently-filled players and lets the optimizer fill gaps', async () => {
     mockHooks()
     const filled = FULL_SQUAD.filter((p) => p.player_id !== 13)
@@ -148,7 +189,10 @@ describe('SquadBuilder', () => {
     await user.click(screen.getByText(/build optimum team/i))
 
     expect(apiSpy).toHaveBeenCalled()
-    const calledUrl = apiSpy.mock.calls[0][0] as string
+    // SavedDraftsControl also fires an apiGet('/api/saved-squads') on mount
+    // now, so the optimizer's call isn't necessarily calls[0] anymore -- find
+    // it by URL instead of assuming its position.
+    const calledUrl = apiSpy.mock.calls.map((c) => c[0] as string).find((u) => u.includes('/api/squad/optimal'))!
     filled.forEach((p) => expect(calledUrl).toContain(String(p.player_id)))
   })
 
@@ -160,7 +204,7 @@ describe('SquadBuilder', () => {
     await user.click(screen.getByText(/build from scratch/i))
 
     expect(apiSpy).toHaveBeenCalled()
-    const calledUrl = apiSpy.mock.calls[0][0] as string
+    const calledUrl = apiSpy.mock.calls.map((c) => c[0] as string).find((u) => u.includes('/api/squad/optimal'))!
     expect(calledUrl).not.toContain('locked=')
   })
 
@@ -173,10 +217,44 @@ describe('SquadBuilder', () => {
     // always shows all positions), so both names can legitimately appear
     // there regardless of this filter -- checking the sidebar specifically is
     // what this test is actually about.
+    // Position is now a button row inside the collapsible filter panel
+    // (matches the real FPL picker's layout) rather than a <select> --
+    // open the panel via its trigger, then click the Forwards pill.
     const sidebar = screen.getByRole('complementary')
-    await user.selectOptions(within(sidebar).getByDisplayValue('All positions'), 'FWD')
+    await user.click(within(sidebar).getByText('All players'))
+    await user.click(within(sidebar).getByText('Forwards'))
     expect(within(sidebar).getByText('Pool FWD Replacement')).toBeInTheDocument()
     expect(within(sidebar).queryByText('Mohamed Salah')).not.toBeInTheDocument()
+  })
+
+  it('filtering the sidebar by team narrows the candidate list', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+    const sidebar = screen.getByRole('complementary')
+    await user.click(within(sidebar).getByText('All players'))
+    await user.click(within(sidebar).getByText('Liverpool'))
+    expect(within(sidebar).getByText('Mohamed Salah')).toBeInTheDocument()
+    expect(within(sidebar).queryByText('Pool FWD Replacement')).not.toBeInTheDocument()
+  })
+
+  it('the price filter dropdown narrows candidates to a max price, "Affordable" pinned above the price ladder', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+    const sidebar = screen.getByRole('complementary')
+
+    await user.click(within(sidebar).getByText('Any price'))
+    expect(within(sidebar).getByText('Affordable')).toBeInTheDocument() // pinned above the ladder
+
+    // £5.0m keeps Pool FWD Replacement (5.0) but excludes Salah (13.0) and
+    // the Ultra Expensive Striker (35.0). Scoped to a button role -- a
+    // candidate row's own price ("£5.0m" as plain text) would otherwise
+    // also match, since the dropdown overlays the still-visible list.
+    await user.click(within(sidebar).getByRole('button', { name: '£5.0m' }))
+    expect(within(sidebar).getByText('Pool FWD Replacement')).toBeInTheDocument()
+    expect(within(sidebar).queryByText('Mohamed Salah')).not.toBeInTheDocument()
+    expect(within(sidebar).queryByText('Ultra Expensive Striker')).not.toBeInTheDocument()
   })
 
   it('shows a loading state while the squad is being fetched', () => {
@@ -254,7 +332,7 @@ describe('SquadBuilder', () => {
     await user.click(screen.getByText(/build around 1 locked/i))
 
     expect(apiSpy).toHaveBeenCalled()
-    const calledUrl = apiSpy.mock.calls[0][0] as string
+    const calledUrl = apiSpy.mock.calls.map((c) => c[0] as string).find((u) => u.includes('/api/squad/optimal'))!
     expect(calledUrl).toContain('locked=13') // Haaland's id -- ONLY his
     expect(calledUrl).not.toContain('locked=13,') // not followed by anyone else
   })
@@ -332,6 +410,28 @@ describe('SquadBuilder', () => {
     expect(screen.getByLabelText('Remove Erling Haaland')).toBeInTheDocument() // untouched
   })
 
+  it('"Just missed the cut" shows both xP and value (xP/£m) together, labelled with the GW range, regardless of mode', async () => {
+    mockHooks()
+    renderWithClient(<SquadBuilder />)
+    const user = userEvent.setup()
+
+    // Default mode ("Best possible"): both numbers visible for a near-miss
+    // candidate -- previously only the raw xP showed here, with no way to
+    // see the value ratio without switching modes.
+    expect(screen.getByText(/over GW1-5/i)).toBeInTheDocument()
+    const panel = screen.getByText('Just missed the cut').closest('div')!.parentElement!
+    const striker = within(panel).getByText('Ultra Expensive Striker').closest('div')!.parentElement!
+    expect(within(striker).getByText('8.0')).toBeInTheDocument() // his xP
+    expect(within(striker).getByText('xP')).toBeInTheDocument()
+    expect(within(striker).getByText('0.23')).toBeInTheDocument() // 8.0 / 35.0, his value
+    expect(within(striker).getByText('£/m')).toBeInTheDocument()
+
+    // Switching to "Best value" mode re-ranks the list but keeps BOTH
+    // numbers visible -- same underlying data either way.
+    await user.click(screen.getByText('Best value'))
+    expect(screen.getByText(/ranked by value/i)).toBeInTheDocument()
+  })
+
   it('the captaincy draft plan recommends a DIFFERENT captain per gameweek when each player has their own standout week', () => {
     // Haaland spikes GW1, Mid One spikes GW2 -- everyone else stays flat and
     // low. The plan should follow the spike, not default to one fixed player.
@@ -363,5 +463,113 @@ describe('SquadBuilder', () => {
     expect(within(rows[0]).getByText('18.0')).toBeInTheDocument() // 9.0 doubled
     expect(within(rows[1]).getByText('Mid One')).toBeInTheDocument() // GW2
     expect(within(rows[1]).getByText('19.0')).toBeInTheDocument() // 9.5 doubled
+  })
+
+  describe('saved drafts', () => {
+    function mockSavedSquadHooks(squads: { id: number; name: string; created_at: string; updated_at: string; player_count: number }[] = []) {
+      vi.spyOn(hooks, 'useSavedSquads').mockReturnValue({ data: { squads }, isLoading: false } as never)
+      const createMutate = vi.fn().mockResolvedValue({})
+      const deleteMutate = vi.fn()
+      vi.spyOn(hooks, 'useCreateSavedSquad').mockReturnValue({ mutateAsync: createMutate, isPending: false } as never)
+      vi.spyOn(hooks, 'useDeleteSavedSquad').mockReturnValue({ mutate: deleteMutate, isPending: false } as never)
+      return { createMutate, deleteMutate }
+    }
+
+    it('saving the current squad calls the create mutation with its name and all 15 player ids', async () => {
+      mockHooks()
+      const { createMutate } = mockSavedSquadHooks()
+      renderWithClient(<SquadBuilder />)
+      const user = userEvent.setup()
+
+      await user.click(screen.getByText(/saved drafts/i))
+      await user.type(screen.getByPlaceholderText(/name this draft/i), 'My Wildcard Squad')
+      await user.click(screen.getByText('Save'))
+
+      expect(createMutate).toHaveBeenCalledWith({
+        name: 'My Wildcard Squad',
+        player_ids: FULL_SQUAD.map((p) => p.player_id),
+        locked_player_ids: [], // nothing locked this session
+      })
+    })
+
+    it('saving with locked players included them in the create mutation payload', async () => {
+      mockHooks()
+      const { createMutate } = mockSavedSquadHooks()
+      renderWithClient(<SquadBuilder />)
+      const user = userEvent.setup()
+
+      await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+      await user.click(screen.getByLabelText('Lock Erling Haaland'))
+
+      await user.click(screen.getByText(/saved drafts/i))
+      await user.type(screen.getByPlaceholderText(/name this draft/i), 'Locked Draft')
+      await user.click(screen.getByText('Save'))
+
+      expect(createMutate).toHaveBeenCalledWith({
+        name: 'Locked Draft',
+        player_ids: FULL_SQUAD.map((p) => p.player_id),
+        locked_player_ids: [13], // Haaland
+      })
+    })
+
+    it('loading a saved draft fetches its player ids and restores which of them were locked', async () => {
+      mockHooks()
+      mockSavedSquadHooks([{ id: 7, name: 'Old Draft', created_at: 'x', updated_at: new Date().toISOString(), player_count: 2 }])
+      // Old Draft references Salah (still in the pool, and was locked) and a
+      // made-up id 9999 that's no longer available -- exercises BOTH the
+      // "skip missing" path AND the "restore only still-valid locks" path.
+      vi.spyOn(client, 'apiGet').mockResolvedValue({
+        id: 7, name: 'Old Draft', created_at: 'x', updated_at: 'x', player_ids: [100, 9999], locked_player_ids: [100, 9999],
+      } as never)
+      renderWithClient(<SquadBuilder />)
+      const user = userEvent.setup()
+
+      await user.click(screen.getByText(/saved drafts/i))
+      await user.click(screen.getByText('Load'))
+
+      expect(screen.getByText(/loaded "old draft"/i)).toBeInTheDocument()
+      expect(screen.getByText(/1 player no longer available, skipped/i)).toBeInTheDocument()
+      // The restored lock is what actually matters here -- Salah (100) is
+      // still valid and should now show as locked, even though lock mode's
+      // padlocks aren't visible yet (need lock mode ON to see them).
+      expect(screen.getByText(/1 player locked in, as saved/i)).toBeInTheDocument()
+      const sidebar = screen.getByRole('complementary')
+      expect(within(sidebar).queryByText('Mohamed Salah')).not.toBeInTheDocument() // now on the pitch, not the sidebar
+      expect(screen.getByText('1 / 15')).toBeInTheDocument() // only Salah actually loaded
+
+      await user.click(screen.getByRole('switch', { name: /toggle lock mode/i }))
+      expect(screen.getByLabelText('Unlock Mohamed Salah')).toBeInTheDocument()
+    })
+
+    it('deleting a saved draft asks for confirmation, then calls the delete mutation', async () => {
+      mockHooks()
+      const { deleteMutate } = mockSavedSquadHooks([
+        { id: 7, name: 'Old Draft', created_at: 'x', updated_at: new Date().toISOString(), player_count: 15 },
+      ])
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderWithClient(<SquadBuilder />)
+      const user = userEvent.setup()
+
+      await user.click(screen.getByText(/saved drafts/i))
+      await user.click(screen.getByLabelText('Delete Old Draft'))
+
+      expect(window.confirm).toHaveBeenCalled()
+      expect(deleteMutate).toHaveBeenCalledWith(7)
+    })
+
+    it('declining the confirmation does NOT call the delete mutation', async () => {
+      mockHooks()
+      const { deleteMutate } = mockSavedSquadHooks([
+        { id: 7, name: 'Old Draft', created_at: 'x', updated_at: new Date().toISOString(), player_count: 15 },
+      ])
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderWithClient(<SquadBuilder />)
+      const user = userEvent.setup()
+
+      await user.click(screen.getByText(/saved drafts/i))
+      await user.click(screen.getByLabelText('Delete Old Draft'))
+
+      expect(deleteMutate).not.toHaveBeenCalled()
+    })
   })
 })

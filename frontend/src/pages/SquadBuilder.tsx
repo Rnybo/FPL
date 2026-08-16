@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Search, X, Plus, Wand2, RotateCcw, UserPlus, Lock, Unlock, Trash2 } from 'lucide-react'
-import { usePlayers, useOptimalSquad } from '../api/hooks'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Search, X, Plus, Wand2, RotateCcw, UserPlus, Lock, Unlock, Trash2, ChevronDown, ChevronUp, Save, FolderOpen } from 'lucide-react'
+import { usePlayers, useOptimalSquad, useSavedSquads, useCreateSavedSquad, useDeleteSavedSquad } from '../api/hooks'
 import { apiGet } from '../api/client'
 import PlayerShirt from '../components/PlayerShirt'
 import CaptainPicks from '../components/CaptainPicks'
-import type { Player, OptimalSquad } from '../api/types'
+import type { Player, OptimalSquad, SavedSquadDetail } from '../api/types'
 
 const BUDGET = 100.0
 const MAX_PER_CLUB = 3
@@ -99,27 +99,61 @@ function computeLineup(squad: Player[], formation: Record<string, number> | null
 // have a genuine standout week worth captaining, and the backend's squad
 // SELECTION already got a nudge toward keeping such players around (see
 // CAPTAIN_CEILING_WEIGHT in backend/app/routers/squad.py).
-type CaptaincyPlanEntry = { gw: number; captainId: number; captainName: string; xp: number }
+//
+// Alongside your own squad's best captain, also surfaces the single best
+// captain option THAT GAMEWEEK across the entire player pool -- i.e. "if you
+// could captain anyone in the league, who, and how many points is that worth
+// over what you're actually getting." bestOverallId === captainId whenever
+// your own pick already IS the league's best that week (a common case, since
+// squads lean toward high-xP players in the first place).
+type CaptaincyPlanEntry = {
+  gw: number
+  captainId: number
+  captainName: string
+  xp: number
+  bestOverallId: number
+  bestOverallName: string
+  bestOverallXp: number
+}
 
-function buildCaptaincyPlan(squad: Player[], gwStart: number, gwEnd: number): CaptaincyPlanEntry[] {
+function buildCaptaincyPlan(squad: Player[], allPlayers: Player[], gwStart: number, gwEnd: number): CaptaincyPlanEntry[] {
   const plan: CaptaincyPlanEntry[] = []
   for (let gw = gwStart; gw <= gwEnd; gw++) {
-    let best: Player | null = null
-    let bestXp = -Infinity
+    let bestSquad: Player | null = null
+    let bestSquadXp = -Infinity
     for (const p of squad) {
       const gwXp = p.gameweeks?.find((g) => g.gw === gw)?.xP ?? 0
-      if (gwXp > bestXp) {
-        bestXp = gwXp
-        best = p
+      if (gwXp > bestSquadXp) {
+        bestSquadXp = gwXp
+        bestSquad = p
       }
     }
-    if (best) plan.push({ gw, captainId: best.player_id, captainName: best.name, xp: bestXp })
+    let bestOverall: Player | null = null
+    let bestOverallXp = -Infinity
+    for (const p of allPlayers) {
+      const gwXp = p.gameweeks?.find((g) => g.gw === gw)?.xP ?? 0
+      if (gwXp > bestOverallXp) {
+        bestOverallXp = gwXp
+        bestOverall = p
+      }
+    }
+    if (bestSquad && bestOverall) {
+      plan.push({
+        gw,
+        captainId: bestSquad.player_id, captainName: bestSquad.name, xp: bestSquadXp,
+        bestOverallId: bestOverall.player_id, bestOverallName: bestOverall.name, bestOverallXp,
+      })
+    }
   }
   return plan
 }
 
 type SortKey = 'xP' | 'price' | 'name'
 type PositionFilter = 'ALL' | Player['position']
+// 'ALL' = no price filter, 'AFFORDABLE' = within current bank, a number = max
+// price ceiling -- mirrors the real FPL picker's single max-price dropdown
+// (see PriceFilterControl) rather than a min/max range.
+type PriceFilter = 'ALL' | 'AFFORDABLE' | number
 
 export default function SquadBuilder() {
   const [gwStart, setGwStart] = useState(1)
@@ -128,6 +162,8 @@ export default function SquadBuilder() {
   const [notification, setNotification] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [positionFilter, setPositionFilter] = useState<PositionFilter>('ALL')
+  const [teamFilter, setTeamFilter] = useState<string>('ALL')
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>('ALL')
   const [sortKey, setSortKey] = useState<SortKey>('xP')
   const [building, setBuilding] = useState(false)
   const [formation, setFormation] = useState<string | null>(null) // null = auto/optimal
@@ -179,9 +215,9 @@ export default function SquadBuilder() {
   // see buildCaptaincyPlan's comment for why it draws from the whole 15, not
   // just this window's fixed starting XI.
   const captaincyPlan = useMemo(() => {
-    if (filledPlayers.length !== 15) return []
-    return buildCaptaincyPlan(filledPlayers, gwStart, gwEnd)
-  }, [filledPlayers, gwStart, gwEnd])
+    if (filledPlayers.length !== 15 || !playersData) return []
+    return buildCaptaincyPlan(filledPlayers, playersData.players, gwStart, gwEnd)
+  }, [filledPlayers, playersData, gwStart, gwEnd])
 
   // "Just missed the cut" -- top few players per position NOT currently in
   // the squad, so a close alternative is visible without having to hunt
@@ -192,6 +228,23 @@ export default function SquadBuilder() {
     const byPos: Record<string, Player[]> = { GK: [], DEF: [], MID: [], FWD: [] }
     playersData.players.filter((p) => !squadIds.has(p.player_id)).forEach((p) => byPos[p.position]?.push(p))
     for (const pos in byPos) byPos[pos] = byPos[pos].sort((a, b) => b.xP - a.xP).slice(0, 4)
+    return byPos
+  }, [playersData, filledPlayers])
+
+  // Same idea, but ranked by value (xP per £m -- same metric as Player
+  // Scout's "Value" column) instead of raw xP, so a cheap, efficient player
+  // surfaces here even if his TOTAL xP is well below the top-4-by-xP list
+  // above. This is what the "Best value" side of the near-miss toggle shows.
+  const nearMissValue = useMemo(() => {
+    if (!playersData) return {} as Record<string, Player[]>
+    const squadIds = new Set(filledPlayers.map((p) => p.player_id))
+    const byPos: Record<string, Player[]> = { GK: [], DEF: [], MID: [], FWD: [] }
+    playersData.players.filter((p) => !squadIds.has(p.player_id)).forEach((p) => byPos[p.position]?.push(p))
+    for (const pos in byPos) {
+      byPos[pos] = byPos[pos]
+        .sort((a, b) => (b.price > 0 ? b.xP / b.price : 0) - (a.price > 0 ? a.xP / a.price : 0))
+        .slice(0, 4)
+    }
     return byPos
   }, [playersData, filledPlayers])
 
@@ -265,6 +318,30 @@ export default function SquadBuilder() {
     setNotification('Team reset -- pick players from the sidebar or build with the optimizer')
   }
 
+  // Loads a saved draft (see SavedDraftsControl) into the pitch. Ids are
+  // re-resolved against the CURRENT player pool, never trusted as-is -- a
+  // draft saved weeks ago could reference someone since removed/transferred
+  // out of the pool, so that's handled gracefully (skipped, not a crash),
+  // matching this app's "always live, never a frozen snapshot" principle
+  // (see saved_squads.py's module docstring). Also restores whichever
+  // players were LOCKED when the draft was saved -- previously this always
+  // reset to no locks, so a draft saved with locks silently forgot them on
+  // reload, and a follow-up "Optimize with bank" run then had nothing
+  // protecting the players it was actually meant to keep.
+  function loadSavedSquad(ids: number[], lockedIdsFromDraft: number[], name: string) {
+    const resolved = ids.map((id) => playerById.get(id)).filter((p): p is Player => !!p)
+    setSlots(toSlots(resolved))
+    const resolvedIdSet = new Set(resolved.map((p) => p.player_id))
+    const restoredLocks = lockedIdsFromDraft.filter((id) => resolvedIdSet.has(id))
+    setLockedIds(new Set(restoredLocks))
+    const missing = ids.length - resolved.length
+    setNotification(
+      `Loaded "${name}"` +
+      (missing > 0 ? ` -- ${missing} player${missing === 1 ? '' : 's'} no longer available, skipped` : '') +
+      (restoredLocks.length > 0 ? ` -- ${restoredLocks.length} player${restoredLocks.length === 1 ? '' : 's'} locked in, as saved` : '')
+    )
+  }
+
   async function callOptimizer(ids: number[]) {
     const params = new URLSearchParams()
     if (gwStart) params.set('gw_start', String(gwStart))
@@ -316,6 +393,16 @@ export default function SquadBuilder() {
   // distinct from buildFromSelected above, which preserves EVERYONE currently
   // filled -- lock mode is for "I definitely want these specific N, surprise
   // me with the rest," not "keep my whole draft, just fill the gaps."
+  //
+  // Also the answer to a real gap: buildFromSelected locks ALL 15 once the
+  // squad is full, so it's a no-op exactly when there's spare bank to
+  // actually use -- there was no button that could improve a full squad.
+  // This same action is surfaced in FREE mode too (see the "Optimize with
+  // £Xm in the bank" button below) specifically for that case: it still
+  // only forces in whatever's in lockedIds (empty unless you've locked
+  // someone via lock mode previously -- switching lockMode off doesn't
+  // clear it), so it's free to spend the leftover budget upgrading anyone
+  // not explicitly protected.
   async function buildAroundLocked() {
     setBuilding(true)
     try {
@@ -337,13 +424,37 @@ export default function SquadBuilder() {
   // not blockers -- you can genuinely go over budget or stack a club beyond 3.
   // The only HARD constraint is structural: there must be an empty slot of
   // the right position to put them in.
+  const teams = useMemo(
+    () => [...new Set((playersData?.players ?? []).map((p) => p.team))].sort(),
+    [playersData]
+  )
+
+  // Descending £0.5m steps from the priciest player down to the cheapest --
+  // matches the real FPL picker's price dropdown exactly (see
+  // PriceFilterControl). Falls back to a sensible fixed range before player
+  // data loads.
+  const priceLadder = useMemo(() => {
+    const prices = (playersData?.players ?? []).map((p) => p.price)
+    const top = prices.length ? Math.ceil(Math.max(...prices) * 2) / 2 : 15.5
+    const bottom = prices.length ? Math.floor(Math.min(...prices) * 2) / 2 : 4.0
+    const out: number[] = []
+    for (let v = top; v >= bottom - 0.001; v -= 0.5) out.push(Math.round(v * 10) / 10)
+    return out
+  }, [playersData])
+
   const candidates = useMemo(() => {
     if (!playersData) return []
     const q = search.trim().toLowerCase()
     return playersData.players
       .filter((p) => !slots.includes(p.player_id))
       .filter((p) => positionFilter === 'ALL' || p.position === positionFilter)
+      .filter((p) => teamFilter === 'ALL' || p.team === teamFilter)
       .filter((p) => !q || p.name.toLowerCase().includes(q))
+      .filter((p) => {
+        if (priceFilter === 'ALL') return true
+        if (priceFilter === 'AFFORDABLE') return p.price <= bank + 0.001
+        return p.price <= priceFilter + 0.001
+      })
       .map((p) => {
         const overBudgetBy = p.price - bank
         const clubCount = clubCounts[p.team] ?? 0
@@ -357,7 +468,7 @@ export default function SquadBuilder() {
         if (sortKey === 'name') return a.player.name.localeCompare(b.player.name)
         return b.player[sortKey] - a.player[sortKey]
       })
-  }, [playersData, slots, positionFilter, search, sortKey, bank, clubCounts])
+  }, [playersData, slots, positionFilter, teamFilter, search, priceFilter, sortKey, bank, clubCounts])
 
   const budgetWarning = bank < -0.001
   const clubWarnings = Object.entries(clubCounts).filter(([, n]) => n > MAX_PER_CLUB).map(([team]) => team)
@@ -367,11 +478,13 @@ export default function SquadBuilder() {
       <Sidebar
         search={search} setSearch={setSearch}
         positionFilter={positionFilter} setPositionFilter={setPositionFilter}
+        teamFilter={teamFilter} setTeamFilter={setTeamFilter} teams={teams}
+        priceFilter={priceFilter} setPriceFilter={setPriceFilter} priceLadder={priceLadder}
         sortKey={sortKey} setSortKey={setSortKey}
         candidates={candidates} onAdd={addPlayer}
       />
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 order-1 lg:order-2">
         <div className="flex items-center gap-4 mb-3 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="bg-red-600 text-white text-sm font-bold px-2.5 py-1 rounded">{filledCount} / 15</span>
@@ -394,6 +507,7 @@ export default function SquadBuilder() {
               ))}
             </select>
           </div>
+          <SavedDraftsControl filledPlayers={filledPlayers} lockedIds={lockedIds} onLoad={loadSavedSquad} />
           <div className="flex items-center gap-2 ml-auto text-xs text-slate-500">
             <label>GW</label>
             <input type="number" min={1} max={38} value={gwStart} onChange={(e) => setGwStart(Number(e.target.value))}
@@ -524,6 +638,18 @@ export default function SquadBuilder() {
                     className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-full border border-slate-300 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed">
                     <RotateCcw size={14} /> {building ? 'Building...' : 'Build from scratch'}
                   </button>
+                  {/* "Build optimum team" above locks EVERY filled player, so
+                      once the squad is full it can't change anything -- a
+                      real gap when there's still money sitting unused. This
+                      reuses buildAroundLocked (only lockedIds are forced in,
+                      empty unless you've locked someone via lock mode before),
+                      so it's free to spend the leftover bank on an upgrade. */}
+                  {filledCount === 15 && bank > 0.001 && (
+                    <button onClick={buildAroundLocked} disabled={building}
+                      className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 disabled:cursor-not-allowed">
+                      <Wand2 size={14} /> {building ? 'Optimizing...' : `Optimize with £${bank.toFixed(1)}m in the bank`}
+                    </button>
+                  )}
                 </>
               )}
               <button onClick={resetTeam} disabled={building}
@@ -537,7 +663,8 @@ export default function SquadBuilder() {
 
             <CaptaincyPlanPanel plan={captaincyPlan} />
 
-            <NearMissPanel nearMiss={nearMiss} slots={slots} onSwap={swapIn} />
+            <NearMissPanel nearMissBest={nearMiss} nearMissValue={nearMissValue} slots={slots} onSwap={swapIn}
+              gwStart={gwStart} gwEnd={gwEnd} />
 
             <CaptainPicks gw={gwStart} />
           </>
@@ -607,6 +734,8 @@ function CaptaincyPlanPanel({ plan }: { plan: CaptaincyPlanEntry[] }) {
       <p className="text-xs text-slate-400 mb-2">
         Best captain from your squad, gameweek by gameweek -- captaincy doubles whoever's biggest that
         week, so the right pick can (and should) change week to week, not stay fixed on one player.
+        "Best in the league" and its diff show what you'd be getting if you could captain anyone, not
+        just your own squad -- a non-zero diff is a hint for your next transfer, not something to act on now.
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
@@ -616,17 +745,33 @@ function CaptaincyPlanPanel({ plan }: { plan: CaptaincyPlanEntry[] }) {
               <th className="px-3 py-2">Recommended captain</th>
               <th className="px-3 py-2 text-right">Their xP</th>
               <th className="px-3 py-2 text-right">With captain boost (2x)</th>
+              <th className="px-3 py-2">Best in the league</th>
+              <th className="px-3 py-2 text-right">Diff (2x)</th>
             </tr>
           </thead>
           <tbody>
-            {plan.map((entry, i) => (
-              <tr key={entry.gw} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
-                <td className="px-3 py-2 text-slate-500">{entry.gw}</td>
-                <td className="px-3 py-2 font-medium text-slate-900">{entry.captainName}</td>
-                <td className="px-3 py-2 text-right text-slate-700">{entry.xp.toFixed(1)}</td>
-                <td className="px-3 py-2 text-right font-bold text-emerald-700">{(entry.xp * 2).toFixed(1)}</td>
-              </tr>
-            ))}
+            {plan.map((entry, i) => {
+              const isYours = entry.bestOverallId === entry.captainId
+              const diff = (entry.bestOverallXp - entry.xp) * 2
+              return (
+                <tr key={entry.gw} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
+                  <td className="px-3 py-2 text-slate-500">{entry.gw}</td>
+                  <td className="px-3 py-2 font-medium text-slate-900">{entry.captainName}</td>
+                  <td className="px-3 py-2 text-right text-slate-700">{entry.xp.toFixed(1)}</td>
+                  <td className="px-3 py-2 text-right font-bold text-emerald-700">{(entry.xp * 2).toFixed(1)}</td>
+                  <td className="px-3 py-2 text-slate-700">
+                    {isYours
+                      ? <span className="text-emerald-700 font-medium">Same as yours</span>
+                      : <>{entry.bestOverallName} <span className="text-slate-400">({entry.bestOverallXp.toFixed(1)})</span></>}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {isYours
+                      ? <span className="text-slate-400">—</span>
+                      : <span className="font-semibold text-amber-600">+{diff.toFixed(1)}</span>}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -634,18 +779,42 @@ function CaptaincyPlanPanel({ plan }: { plan: CaptaincyPlanEntry[] }) {
   )
 }
 
-function NearMissPanel({ nearMiss, slots, onSwap }: {
-  nearMiss: Record<string, Player[]>
+function NearMissPanel({ nearMissBest, nearMissValue, slots, onSwap, gwStart, gwEnd }: {
+  nearMissBest: Record<string, Player[]>
+  nearMissValue: Record<string, Player[]>
   slots: (number | null)[]
   onSwap: (p: Player) => void
+  gwStart: number
+  gwEnd: number
 }) {
+  const [mode, setMode] = useState<'best' | 'value'>('best')
+  const nearMiss = mode === 'best' ? nearMissBest : nearMissValue
   const positions = (['GK', 'DEF', 'MID', 'FWD'] as const).filter((pos) => (nearMiss[pos] ?? []).length > 0)
+  const gwLabel = gwEnd > gwStart ? `GW${gwStart}-${gwEnd}` : `GW${gwStart}`
   if (positions.length === 0) return null
   return (
     <div className="mt-6">
-      <h3 className="text-sm font-semibold text-slate-700 mb-1">Just missed the cut</h3>
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+        <h3 className="text-sm font-semibold text-slate-700">Just missed the cut</h3>
+        <div className="flex items-center gap-1.5 bg-slate-100 rounded-full p-0.5">
+          <button onClick={() => setMode('best')}
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${mode === 'best' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>
+            Best possible
+          </button>
+          <button onClick={() => setMode('value')}
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${mode === 'value' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>
+            Best value
+          </button>
+        </div>
+      </div>
+      {/* Both numbers (xP, and xP/£m) come from the SAME data pulled for your
+          selected gameweek range (usePlayers(gwStart, gwEnd) above) -- always
+          shown together now, with whichever one the current mode actually
+          ranks by highlighted, since "0.42" alone with no label or context
+          was hard to make sense of. */}
       <p className="text-xs text-slate-400 mb-2">
-        Close alternatives by position -- swap one in if your gut says otherwise.
+        Close alternatives by position, over {gwLabel} -- ranked by {mode === 'best' ? 'total xP' : 'value (xP per £m)'}.
+        Swap one in if your gut says otherwise.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {positions.map((pos) => {
@@ -661,7 +830,14 @@ function NearMissPanel({ nearMiss, slots, onSwap }: {
                     <p className="text-xs font-medium text-slate-900 truncate">{p.name}</p>
                     <p className="text-[10px] text-slate-400 truncate">{p.team} · £{p.price.toFixed(1)}m</p>
                   </div>
-                  <span className="text-xs font-semibold text-emerald-700 flex-shrink-0">{p.xP.toFixed(1)}</span>
+                  <div className="text-right flex-shrink-0 leading-tight">
+                    <p className={`text-xs ${mode === 'best' ? 'font-bold text-emerald-700' : 'font-medium text-slate-500'}`}>
+                      {p.xP.toFixed(1)} <span className="font-normal text-slate-400">xP</span>
+                    </p>
+                    <p className={`text-xs ${mode === 'value' ? 'font-bold text-emerald-700' : 'font-medium text-slate-400'}`}>
+                      {p.price > 0 ? (p.xP / p.price).toFixed(2) : '—'} <span className="font-normal text-slate-400">£/m</span>
+                    </p>
+                  </div>
                   <button onClick={() => onSwap(p)} aria-label={`${hasEmptySlot ? 'Add' : 'Swap in'} ${p.name}`}
                     className="flex-shrink-0 text-[10px] px-1.5 py-1 rounded-md bg-slate-100 text-slate-600 hover:bg-emerald-100 hover:text-emerald-700">
                     {hasEmptySlot ? 'Add' : 'Swap'}
@@ -676,49 +852,143 @@ function NearMissPanel({ nearMiss, slots, onSwap }: {
   )
 }
 
-function Sidebar({ search, setSearch, positionFilter, setPositionFilter, sortKey, setSortKey, candidates, onAdd }: {
+// Short circular-badge label for a team, standing in for a crest -- no
+// verified badge-image CDN in this codebase (unlike PlayerShirt's shirt
+// CDN), so a plain colored initials chip is the safe choice rather than a
+// possibly-broken external image. Multi-word names use one letter per word
+// (max 3, e.g. "Crystal Palace" -> "CP"); single-word names take the first 3
+// letters (e.g. "Everton" -> "EVE").
+function teamBadgeLabel(team: string): string {
+  const words = team.split(' ').filter(Boolean)
+  if (words.length > 1) return words.map((w) => w[0]).join('').slice(0, 3).toUpperCase()
+  return team.slice(0, 3).toUpperCase()
+}
+
+function Sidebar({
+  search, setSearch,
+  positionFilter, setPositionFilter,
+  teamFilter, setTeamFilter, teams,
+  priceFilter, setPriceFilter, priceLadder,
+  sortKey, setSortKey,
+  candidates, onAdd,
+}: {
   search: string
   setSearch: (s: string) => void
   positionFilter: PositionFilter
   setPositionFilter: (p: PositionFilter) => void
+  teamFilter: string
+  setTeamFilter: (t: string) => void
+  teams: string[]
+  priceFilter: PriceFilter
+  setPriceFilter: (p: PriceFilter) => void
+  priceLadder: number[]
   sortKey: SortKey
   setSortKey: (s: SortKey) => void
   candidates: { player: Player; canAdd: boolean; warning: string }[]
   onAdd: (p: Player) => void
 }) {
+  // Collapsible Position+Teams panel, closed by default -- mirrors the real
+  // FPL picker's "All players ▾" trigger opening a combined filter panel,
+  // rather than always-visible dropdowns like before.
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  const filterLabel = positionFilter === 'ALL' && teamFilter === 'ALL'
+    ? 'All players'
+    : [positionFilter !== 'ALL' ? POSITION_LABELS[positionFilter] : null, teamFilter !== 'ALL' ? teamFilter : null]
+        .filter(Boolean).join(' · ')
+
+  function resetFilters() {
+    setSearch('')
+    setPositionFilter('ALL')
+    setTeamFilter('ALL')
+    setPriceFilter('ALL')
+  }
+
   return (
     // Stacked full-width on mobile (matches the flex-col page layout above);
     // fixed 300px + height-capped-with-internal-scroll only kicks in at lg,
     // once it's sitting beside the pitch instead of above/below it.
+    // order-2 lg:order-1 -- on mobile this drops BELOW the pitch/team section
+    // (per user feedback: pitch first, candidate list second); at lg it's
+    // back on the left, unchanged, since it's order-1 there.
     <div role="complementary" aria-label="Candidate players"
-      className="w-full lg:w-[300px] flex-shrink-0 border border-slate-200 rounded-lg overflow-hidden flex flex-col lg:max-h-[calc(100vh-3rem)]">
+      className="w-full lg:w-[300px] flex-shrink-0 border border-slate-200 rounded-lg overflow-hidden flex flex-col lg:max-h-[calc(100vh-3rem)] order-2 lg:order-1">
       <div className="p-3 border-b border-slate-100">
+        <p className="text-[10px] font-semibold text-slate-400 tracking-wide uppercase mb-1.5">Find a player</p>
         <div className="relative mb-2">
           <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search"
-            className="w-full pl-8 pr-8 py-1.5 text-sm border border-slate-300 rounded-md" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name"
+            className="w-full pl-8 pr-8 py-1.5 text-sm border border-slate-300 rounded-full" />
           {search && (
             <button onClick={() => setSearch('')} className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600">
               <X size={15} />
             </button>
           )}
         </div>
-        <div className="flex gap-1.5 flex-wrap">
-          <select value={positionFilter} onChange={(e) => setPositionFilter(e.target.value as PositionFilter)}
-            className="text-xs border border-slate-300 rounded-md px-2 py-1">
-            <option value="ALL">All positions</option>
-            <option value="GK">Goalkeepers</option>
-            <option value="DEF">Defenders</option>
-            <option value="MID">Midfielders</option>
-            <option value="FWD">Forwards</option>
-          </select>
+
+        {/* Trigger pill row -- "All players ▾ / Total points ▾ / Reset ↺",
+            same shape as the real FPL picker's filter bar. */}
+        <div className="flex gap-1.5 flex-wrap items-center">
+          <button onClick={() => setFilterOpen((v) => !v)} aria-expanded={filterOpen}
+            className={`flex items-center gap-1 text-xs font-medium border rounded-full px-3 py-1.5 ${
+              filterOpen || filterLabel !== 'All players'
+                ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
+                : 'border-slate-300 text-slate-700'
+            }`}>
+            {filterLabel}
+            {filterOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
           <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="text-xs border border-slate-300 rounded-md px-2 py-1">
-            <option value="xP">Sort: xP</option>
-            <option value="price">Sort: Price</option>
-            <option value="name">Sort: Name</option>
+            className="text-xs font-medium border border-slate-300 rounded-full px-3 py-1.5 text-slate-700">
+            <option value="xP">Total points</option>
+            <option value="price">Price</option>
+            <option value="name">Name</option>
           </select>
         </div>
+
+        <div className="flex items-center gap-1.5 mt-2">
+          <PriceFilterControl priceFilter={priceFilter} setPriceFilter={setPriceFilter} priceLadder={priceLadder} />
+          <button onClick={resetFilters}
+            className="flex items-center gap-1 text-xs font-medium text-slate-500 border border-slate-300 rounded-full px-3 py-1.5 hover:bg-slate-50">
+            Reset <RotateCcw size={12} />
+          </button>
+        </div>
+
+        {filterOpen && (
+          <div className="mt-3 border border-slate-200 rounded-lg p-3">
+            <p className="text-xs font-semibold text-slate-700 mb-1.5">Position</p>
+            <div className="flex gap-1.5 flex-wrap mb-3">
+              {(['ALL', 'GK', 'DEF', 'MID', 'FWD'] as PositionFilter[]).map((pos) => (
+                <button key={pos} onClick={() => setPositionFilter(pos)}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                    positionFilter === pos ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}>
+                  {pos === 'ALL' ? 'All positions' : POSITION_LABELS[pos]}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-xs font-semibold text-slate-700 mb-1.5">Teams</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {teams.map((team) => {
+                const active = teamFilter === team
+                return (
+                  <button key={team} onClick={() => setTeamFilter(active ? 'ALL' : team)}
+                    className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded-md text-left ${
+                      active ? 'bg-indigo-600 text-white font-medium' : 'text-slate-600 hover:bg-slate-100'
+                    }`}>
+                    <span className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                      active ? 'bg-white text-indigo-700' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {teamBadgeLabel(team)}
+                    </span>
+                    <span className="truncate">{team}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="bg-gradient-to-r from-sky-400 to-indigo-500 text-white text-xs text-center py-1.5">
@@ -747,6 +1017,190 @@ function Sidebar({ search, setSearch, positionFilter, setPositionFilter, sortKey
         ))}
         {candidates.length === 0 && <p className="text-xs text-slate-400 text-center py-6">No players match.</p>}
       </div>
+    </div>
+  )
+}
+
+// Single max-price dropdown, matching the real FPL picker exactly: a pill
+// trigger showing the current selection ("Any price" / "Affordable" /
+// "£X.Xm"), opening a scrollable list with "Affordable" pinned at the top
+// followed by descending £0.5m steps. Closes on selecting a value or on an
+// outside click (the outside-click listener is only attached while open, so
+// it costs nothing the rest of the time).
+function PriceFilterControl({ priceFilter, setPriceFilter, priceLadder }: {
+  priceFilter: PriceFilter
+  setPriceFilter: (p: PriceFilter) => void
+  priceLadder: number[]
+}) {
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onClickOutside(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [open])
+
+  const label = priceFilter === 'ALL' ? 'Any price' : priceFilter === 'AFFORDABLE' ? 'Affordable' : `£${priceFilter.toFixed(1)}m`
+
+  function select(value: PriceFilter) {
+    setPriceFilter(value)
+    setOpen(false)
+  }
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className={`flex items-center gap-1 text-xs font-medium border rounded-full px-3 py-1.5 ${
+          priceFilter !== 'ALL' ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-300 text-slate-700'
+        }`}>
+        {label}
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-36 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg py-1">
+          <button onClick={() => select('AFFORDABLE')}
+            className={`w-full text-left text-xs px-3 py-1.5 ${
+              priceFilter === 'AFFORDABLE' ? 'bg-indigo-50 text-indigo-800 font-medium' : 'text-slate-700 hover:bg-slate-50'
+            }`}>
+            Affordable
+          </button>
+          {priceLadder.map((v) => (
+            <button key={v} onClick={() => select(v)}
+              className={`w-full text-left text-xs px-3 py-1.5 ${
+                priceFilter === v ? 'bg-indigo-50 text-indigo-800 font-medium' : 'text-slate-700 hover:bg-slate-50'
+              }`}>
+              £{v.toFixed(1)}m
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const mins = Math.round(ms / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
+// Squad Builder's "save as draft" -- a pill trigger opening a panel with a
+// save-current-squad-as row on top and the saved list below, same
+// collapsible-panel pattern as the Sidebar's filter control and
+// PriceFilterControl above. Loading re-resolves ids against the CURRENT pool
+// (see loadSavedSquad in the parent) rather than trusting a frozen snapshot.
+// Saves whichever players are CURRENTLY locked alongside the squad, and
+// passes them back through on load -- see loadSavedSquad's comment for why
+// that round-trip matters (a draft with locks used to forget them on reload).
+function SavedDraftsControl({ filledPlayers, lockedIds, onLoad }: {
+  filledPlayers: Player[]
+  lockedIds: Set<number>
+  onLoad: (ids: number[], lockedIds: number[], name: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [loadingId, setLoadingId] = useState<number | null>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const { data, isLoading } = useSavedSquads()
+  const createMutation = useCreateSavedSquad()
+  const deleteMutation = useDeleteSavedSquad()
+
+  useEffect(() => {
+    if (!open) return
+    function onClickOutside(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [open])
+
+  async function handleSave() {
+    const name = saveName.trim()
+    if (!name || filledPlayers.length === 0) return
+    await createMutation.mutateAsync({
+      name,
+      player_ids: filledPlayers.map((p) => p.player_id),
+      locked_player_ids: filledPlayers.filter((p) => lockedIds.has(p.player_id)).map((p) => p.player_id),
+    })
+    setSaveName('')
+  }
+
+  async function handleLoad(id: number, name: string) {
+    setLoadingId(id)
+    try {
+      const detail = await apiGet<SavedSquadDetail>(`/api/saved-squads/${id}`)
+      onLoad(detail.player_ids, detail.locked_player_ids, name)
+      setOpen(false)
+    } finally {
+      setLoadingId(null)
+    }
+  }
+
+  function handleDelete(id: number, name: string) {
+    if (!window.confirm(`Delete "${name}"? This can't be undone.`)) return
+    deleteMutation.mutate(id)
+  }
+
+  const squads = data?.squads ?? []
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className={`flex items-center gap-1 text-xs font-medium border rounded-full px-3 py-1.5 ${
+          open ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-300 text-slate-700'
+        }`}>
+        <FolderOpen size={13} /> Saved drafts{squads.length > 0 ? ` (${squads.length})` : ''}
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-72 bg-white border border-slate-200 rounded-lg shadow-lg p-3">
+          <p className="text-xs font-semibold text-slate-700 mb-1.5">Save current squad</p>
+          <div className="flex gap-1.5 mb-3">
+            <input value={saveName} onChange={(e) => setSaveName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+              placeholder={filledPlayers.length === 0 ? 'Add players first...' : 'Name this draft...'}
+              disabled={filledPlayers.length === 0}
+              className="flex-1 min-w-0 text-xs border border-slate-300 rounded-md px-2 py-1.5 disabled:bg-slate-50" />
+            <button onClick={handleSave} disabled={!saveName.trim() || filledPlayers.length === 0 || createMutation.isPending}
+              className="flex-shrink-0 flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed">
+              <Save size={12} /> {createMutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {filledPlayers.length > 0 && filledPlayers.length < 15 && (
+            <p className="text-[10px] text-amber-600 -mt-2 mb-3">Saving as a {filledPlayers.length}/15 work-in-progress draft.</p>
+          )}
+
+          <p className="text-xs font-semibold text-slate-700 mb-1.5">Your drafts</p>
+          {isLoading && <p className="text-xs text-slate-400">Loading...</p>}
+          {!isLoading && squads.length === 0 && <p className="text-xs text-slate-400">No saved drafts yet.</p>}
+          <div className="max-h-56 overflow-y-auto -mx-1">
+            {squads.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 px-1 py-1.5 hover:bg-slate-50 rounded-md">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-slate-900 truncate">{s.name}</p>
+                  <p className="text-[10px] text-slate-400">{s.player_count}/15 players · {timeAgo(s.updated_at)}</p>
+                </div>
+                <button onClick={() => handleLoad(s.id, s.name)} disabled={loadingId === s.id}
+                  className="flex-shrink-0 text-[10px] px-2 py-1 rounded-md bg-slate-100 text-slate-600 hover:bg-indigo-100 hover:text-indigo-700 disabled:opacity-40">
+                  {loadingId === s.id ? 'Loading...' : 'Load'}
+                </button>
+                <button onClick={() => handleDelete(s.id, s.name)} aria-label={`Delete ${s.name}`}
+                  className="flex-shrink-0 text-slate-400 hover:text-red-600 p-1">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

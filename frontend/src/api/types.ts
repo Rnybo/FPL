@@ -31,6 +31,7 @@ export interface LastSeasonStats {
   games: number
   starts: number | null
   start_pct: number | null
+  total_points: number
   mean_points: number
   max_points: number
   min_points: number
@@ -69,6 +70,57 @@ export interface LastSeasonBreakdown {
   points_by_component: LastSeasonPointsByComponent
 }
 
+export interface OutcomeProbabilities {
+  goal_pts: number
+  assist_pts: number
+  cs_pts: number
+  defcon_pts: number
+}
+
+export interface OpponentEntry {
+  opponent: string
+  avg_points: number
+  games: number
+  next_gw: number | null
+}
+
+export interface FdrTier {
+  fdr: number
+  avg_points: number
+  games: number
+}
+
+export interface OpponentStats {
+  best_opponents: OpponentEntry[]
+  worst_opponents: OpponentEntry[]
+  best_fdr: FdrTier
+  worst_fdr: FdrTier
+}
+
+export interface MonthlyPointsEntry {
+  month: string
+  values: number[]
+  min: number
+  q1: number
+  median: number
+  q3: number
+  max: number
+  n_seasons: number
+}
+
+export interface PointsByMonth {
+  months: MonthlyPointsEntry[]
+  seasons_included: string[]
+}
+
+export interface OpponentFixtureHistoryEntry {
+  gw: number
+  opponent: string
+  venue_now: 'H' | 'A'
+  home_points_last_season: number | null
+  away_points_last_season: number | null
+}
+
 export interface Player {
   player_id: number
   name: string
@@ -81,7 +133,12 @@ export interface Player {
   gameweeks?: GameweekXp[]
   historic?: HistoricStats | null
   last_season_stats?: LastSeasonStats | null
+  last_season_total_points?: number
   last_season_breakdown?: LastSeasonBreakdown | null
+  prob?: OutcomeProbabilities | null
+  opponent_stats?: OpponentStats | null
+  points_by_month?: PointsByMonth | null
+  points_vs_opponent_last_season?: OpponentFixtureHistoryEntry[] | null
 }
 
 export interface PlayersResponse {
@@ -150,4 +207,78 @@ export interface CaptainPicksResponse {
   gw: number
   safe: CaptainPick[]
   haul: CaptainPick[]
+}
+
+export interface TeamPick {
+  player_id: number
+  name: string
+  position: 'GK' | 'DEF' | 'MID' | 'FWD'
+  team: string
+  team_code?: number
+  price: number
+  xP: number
+  selling_price: number
+}
+
+export interface TeamLineup {
+  formation: Record<string, number>
+  captain: string
+  vice_captain: string
+  expected_points: number
+  expected_points_with_captain: number
+  starter_ids: number[]
+  bench_ids: number[]
+}
+
+export interface TransferSuggestion {
+  out_name: string
+  in_name: string
+  position: string
+  gain: number
+  cost_change: number
+}
+
+export interface TeamOverview {
+  team_id: number
+  manager_name: string
+  team_name: string
+  overall_rank: number | null
+  total_points: number | null
+  squad_published: boolean
+  bank: number | null
+  picks: TeamPick[] | null
+  lineup: TeamLineup | null
+  suggestions: TransferSuggestion[] | null
+  note?: string
+}
+
+export interface LeagueStanding {
+  rank: number
+  manager_name: string
+  team_name: string
+  team_id: number
+  total_points: number
+}
+
+export interface LeagueResponse {
+  league_id: number
+  league_name: string | null
+  standings: LeagueStanding[]
+}
+
+export interface SavedSquadSummary {
+  id: number
+  name: string
+  created_at: string
+  updated_at: string
+  player_count: number
+}
+
+export interface SavedSquadDetail {
+  id: number
+  name: string
+  created_at: string
+  updated_at: string
+  player_ids: number[]
+  locked_player_ids: number[]
 }

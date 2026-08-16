@@ -241,3 +241,26 @@ CREATE TABLE IF NOT EXISTS captain_sim_inputs (
 -- from "never started, came on as a sub" -- exactly the distinction needed
 -- for a real start-percentage stat (see docs re: captaincy model improvements).
 ALTER TABLE player_gameweek_stats ADD COLUMN starts INTEGER;
+
+-- Added for Squad Builder's "save as draft" feature. Only player_ids are
+-- stored -- xP/price/everything else is ALWAYS re-resolved live against
+-- current predictions on load, never frozen, so a draft saved weeks ago
+-- reflects TODAY's model, not a stale one (matches this app's "never a
+-- black box, always current" principle elsewhere). Solo single-user app, no
+-- auth (see docs/build-spec-inspiration.md) -- no owner/user_id column.
+CREATE TABLE IF NOT EXISTS saved_squads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    player_ids  TEXT NOT NULL,   -- JSON array of player_ids, up to 15
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- Which of a saved squad's players were LOCKED (Squad Builder's lock mode)
+-- at save time, so reloading a draft restores that too -- previously only
+-- player_ids was saved, so reloading a draft that had locks silently forgot
+-- them, making a follow-up "Optimize with bank" run fully unconstrained
+-- instead of respecting whatever the person had actually locked in.
+-- JSON array, default '[]' so pre-existing rows (saved before this column
+-- existed) just mean "nothing was locked," not a NULL/missing-data case.
+ALTER TABLE saved_squads ADD COLUMN locked_player_ids TEXT NOT NULL DEFAULT '[]';

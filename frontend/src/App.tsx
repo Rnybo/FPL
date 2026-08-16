@@ -1,6 +1,8 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import PlayerScout from './pages/PlayerScout'
 import SquadBuilder from './pages/SquadBuilder'
+import MyTeam from './pages/MyTeam'
+import LeagueHub from './pages/LeagueHub'
 import ComingSoon from './pages/ComingSoon'
 
 const NAV = [
@@ -43,8 +45,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<PlayerScout />} />
         <Route path="/squad" element={<SquadBuilder />} />
-        <Route path="/league" element={<ComingSoon title="League Hub" />} />
-        <Route path="/team" element={<ComingSoon title="My Team" />} />
+        <Route path="/league" element={<LeagueHub />} />
+        <Route path="/team" element={<MyTeam />} />
         <Route path="/fixtures" element={<ComingSoon title="Fixtures" />} />
         <Route path="/model" element={<ComingSoon title="Model Transparency" />} />
       </Routes>

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import ALLOWED_ORIGINS
-from app.routers import players, model_runs, squad, league, team, fixtures, captain
+from app.routers import players, model_runs, squad, league, team, fixtures, captain, saved_squads
 from app import scheduler
 
 
@@ -27,7 +27,10 @@ app = FastAPI(title="FPL Expected Points API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET"],
+    # POST/PUT/DELETE added for saved_squads (Squad Builder's "save as draft")
+    # -- everything else on this API is read-only (GET), that one feature is
+    # the sole reason this isn't just ["GET"].
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -38,6 +41,7 @@ app.include_router(league.router)
 app.include_router(team.router)
 app.include_router(fixtures.router)
 app.include_router(captain.router)
+app.include_router(saved_squads.router)
 
 
 @app.get("/api/health")

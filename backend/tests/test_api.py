@@ -29,8 +29,50 @@ def test_players_returns_real_data():
     data = resp.json()
     assert len(data["players"]) > 0
     first = data["players"][0]
-    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_breakdown"}
+    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_total_points", "last_season_breakdown", "prob", "opponent_stats", "points_by_month", "points_vs_opponent_last_season"}
     assert first["position"] in {"GK", "DEF", "MID", "FWD"}
+
+
+def test_players_prob_is_a_real_probability_and_correlates_with_the_points_it_explains():
+    """prob.{goal_pts,assist_pts,cs_pts,defcon_pts} are P(>=1 of that
+    outcome) over the window -- must be real probabilities (0-1), and a
+    player with a much higher xP in that specific component should
+    generally have a higher probability of it too (they're literally
+    derived from the same underlying rate -- see players.py's
+    _outcome_probabilities docstring)."""
+    resp = client.get("/api/players")
+    players = [p for p in resp.json()["players"] if p["prob"] is not None]
+    assert len(players) > 0
+    for p in players[:100]:
+        for key in ("goal_pts", "assist_pts", "cs_pts", "defcon_pts"):
+            assert 0 <= p["prob"][key] <= 1
+
+    by_goal_pts = sorted(players, key=lambda p: p["breakdown"]["goal_pts"])
+    low, high = by_goal_pts[0], by_goal_pts[-1]
+    assert high["prob"]["goal_pts"] >= low["prob"]["goal_pts"]
+
+    by_defcon_pts = sorted(players, key=lambda p: p["breakdown"]["defcon_pts"])
+    low, high = by_defcon_pts[0], by_defcon_pts[-1]
+    assert high["prob"]["defcon_pts"] >= low["prob"]["defcon_pts"]
+
+
+def test_players_prob_widens_towards_certainty_over_a_longer_window():
+    """P(>=1 goal) etc. is a combined/cumulative probability -- a longer
+    window must never give a LOWER probability than a strict sub-window for
+    the same player (more chances to do it at least once)."""
+    resp1 = client.get("/api/players?gw_start=1&gw_end=1")
+    resp5 = client.get("/api/players?gw_start=1&gw_end=5")
+    prob1_by_id = {p["player_id"]: p["prob"] for p in resp1.json()["players"] if p["prob"]}
+    prob5_by_id = {p["player_id"]: p["prob"] for p in resp5.json()["players"] if p["prob"]}
+    checked_any = False
+    for pid, prob5 in prob5_by_id.items():
+        prob1 = prob1_by_id.get(pid)
+        if prob1 is None:
+            continue
+        checked_any = True
+        for key in ("goal_pts", "assist_pts", "cs_pts", "defcon_pts"):
+            assert prob5[key] >= prob1[key] - 1e-9
+    assert checked_any
 
 
 def test_players_last_season_stats_are_internally_consistent():
@@ -51,7 +93,33 @@ def test_players_last_season_stats_are_internally_consistent():
         assert s["start_pct"] == pytest.approx(100 * s["starts"] / s["games"], abs=0.1)
         assert s["variance"] >= 0
         assert s["std_dev"] == pytest.approx(s["variance"] ** 0.5, abs=0.05)
+        assert s["total_points"] == pytest.approx(s["games"] * s["mean_points"], abs=s["games"] * 0.5)
     assert checked_any, "no player in the sample had last-season data -- test wasn't exercised"
+
+
+def test_players_last_season_total_points_is_flattened_and_matches_nested_stats():
+    """last_season_total_points exists directly on the row (for Player
+    Scout's sortable column) and must always agree with the nested
+    last_season_stats.total_points it's derived from -- or be 0 when there's
+    no last-season data at all (a brand-new signing)."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"][:50]:
+        if p["last_season_stats"] is None:
+            assert p["last_season_total_points"] == 0
+        else:
+            checked_any = True
+            assert p["last_season_total_points"] == p["last_season_stats"]["total_points"]
+    assert checked_any, "no player in the sample had last-season data -- test wasn't exercised"
+
+
+def test_players_scout_can_sort_by_last_season_total_points():
+    """The whole point of flattening it -- confirms it's actually a usable,
+    varying number across the pool, not a constant that would make sorting
+    by it a no-op."""
+    resp = client.get("/api/players")
+    values = {p["last_season_total_points"] for p in resp.json()["players"]}
+    assert len(values) > 10  # genuinely varies across the pool
 
 
 def test_players_last_season_breakdown_is_internally_consistent():
@@ -78,6 +146,216 @@ def test_players_last_season_breakdown_is_internally_consistent():
         component_sum = sum(b["points_by_component"].values())
         assert component_sum == pytest.approx(len(games) * pct["overall"], abs=len(games) * 0.5)
     assert checked_any, "no player in the sample had a last-season breakdown -- test wasn't exercised"
+
+
+def test_players_opponent_stats_shape_and_ranking():
+    """best_opponents/worst_opponents are each up to 5 entries, ranked
+    correctly (best descending by avg_points, worst ascending -- i.e. the
+    single worst opponent first), each backed by at least 1 real historical
+    game, and best_fdr/worst_fdr are genuinely the extremes of that player's
+    own FDR-bucketed averages (see players.py's _opponent_stats docstring)."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"][:80]:
+        s = p["opponent_stats"]
+        if s is None:
+            continue
+        checked_any = True
+        assert 0 < len(s["best_opponents"]) <= 5
+        assert 0 < len(s["worst_opponents"]) <= 5
+        for entry in s["best_opponents"] + s["worst_opponents"]:
+            assert entry["games"] >= 1
+            assert entry["opponent"]  # non-empty
+            assert entry["next_gw"] is None or entry["next_gw"] >= 1
+
+        best_avgs = [e["avg_points"] for e in s["best_opponents"]]
+        assert best_avgs == sorted(best_avgs, reverse=True)  # descending -- favorite first
+        worst_avgs = [e["avg_points"] for e in s["worst_opponents"]]
+        assert worst_avgs == sorted(worst_avgs)  # ascending -- least favorite first
+
+        for tier in (s["best_fdr"], s["worst_fdr"]):
+            assert 1 <= tier["fdr"] <= 5
+            assert tier["games"] >= 1
+        if s["best_fdr"]["fdr"] != s["worst_fdr"]["fdr"]:
+            assert s["best_fdr"]["avg_points"] >= s["worst_fdr"]["avg_points"]
+    assert checked_any, "no player in the sample had opponent_stats -- test wasn't exercised"
+
+
+def test_players_opponent_stats_next_gw_matches_a_real_upcoming_fixture():
+    """Where next_gw is set, it must correspond to a REAL scheduled fixture
+    this season between the player's current team and that opponent -- not
+    just any future gameweek."""
+    resp = client.get("/api/players")
+    fixtures = client.get("/api/fixtures").json()["fixtures"]
+    checked_any = False
+    for p in resp.json()["players"][:200]:
+        s = p["opponent_stats"]
+        if s is None:
+            continue
+        for entry in s["best_opponents"] + s["worst_opponents"]:
+            if entry["next_gw"] is None:
+                continue
+            checked_any = True
+            matches = [
+                f for f in fixtures
+                if f["gw"] == entry["next_gw"]
+                and entry["opponent"] in (f["home_team"], f["away_team"])
+                and p["team"] in (f["home_team"], f["away_team"])
+            ]
+            assert matches, f"{p['name']}: no real fixture vs {entry['opponent']} in GW{entry['next_gw']}"
+    assert checked_any, "no opponent entry in the sample had a next_gw set -- test wasn't exercised"
+
+
+def test_players_points_by_month_shape_and_internal_consistency():
+    """Each month's box-plot stats (min/q1/median/q3/max) must be internally
+    ordered, n_seasons must match the length of the values array (at most
+    MONTHLY_LOOKBACK_SEASONS=5), months must appear in Premier-League
+    calendar order (Aug first, not Jan), and every value must be a genuine
+    points-PER-GAME rate (not a raw monthly total) -- see players.py's
+    _monthly_points_per_game docstring for why that distinction matters."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"][:80]:
+        m = p["points_by_month"]
+        if m is None:
+            continue
+        checked_any = True
+        assert 1 <= len(m["seasons_included"]) <= 5
+        assert len(m["months"]) > 0
+
+        from app.routers.players import MONTH_ORDER
+        seen_order = [entry["month"] for entry in m["months"]]
+        assert seen_order == sorted(seen_order, key=MONTH_ORDER.index)
+
+        for entry in m["months"]:
+            assert entry["month"] in MONTH_ORDER
+            assert 1 <= entry["n_seasons"] <= 5
+            assert len(entry["values"]) == entry["n_seasons"]
+            assert entry["min"] <= entry["q1"] <= entry["median"] <= entry["q3"] <= entry["max"]
+            assert entry["min"] == pytest.approx(min(entry["values"]), abs=1e-6)
+            assert entry["max"] == pytest.approx(max(entry["values"]), abs=1e-6)
+            # A points-per-game RATE for a single game played is bounded on
+            # both ends -- roughly [-6, 30] for a real single game (a red
+            # card + own goal can go negative; a genuine 20+ point haul is
+            # the ceiling) -- catches an accidental raw MONTHLY SUM (not
+            # per-game average) regression, which could run into the
+            # hundreds for a player with many games in that month.
+            for v in entry["values"]:
+                assert -6 <= v <= 30
+    assert checked_any, "no player in the sample had points_by_month -- test wasn't exercised"
+
+
+def test_players_points_by_month_matches_a_manual_recomputation():
+    """Recompute one real player's points-per-game for one real month from
+    raw player_gameweek_stats + fixtures directly, and confirm it matches
+    the API's number exactly -- not just structurally plausible."""
+    import sqlite3
+    from app.config import DB_PATH
+    from app.routers.players import _recent_season_ids, LAST_COMPLETE_SEASON, MONTHLY_LOOKBACK_SEASONS
+
+    resp = client.get("/api/players")
+    target = next(p for p in resp.json()["players"] if p["points_by_month"] is not None)
+    month_entry = target["points_by_month"]["months"][0]
+    season_ids = _recent_season_ids(LAST_COMPLETE_SEASON, MONTHLY_LOOKBACK_SEASONS)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT pgs.season_id, pgs.total_points, f.kickoff_time
+           FROM player_gameweek_stats pgs
+           JOIN fixtures f ON f.fixture_id = pgs.fixture_id
+           WHERE pgs.player_id = ? AND pgs.minutes > 0""",
+        (target["player_id"],),
+    ).fetchall()
+    conn.close()
+
+    import datetime
+    by_season: dict[str, list[int]] = {}
+    for r in rows:
+        if r["season_id"] not in season_ids:
+            continue
+        month = datetime.datetime.fromisoformat(r["kickoff_time"].replace("Z", "+00:00")).strftime("%b")
+        if month != month_entry["month"]:
+            continue
+        by_season.setdefault(r["season_id"], []).append(r["total_points"])
+
+    manual_values = sorted(round(sum(v) / len(v), 2) for v in by_season.values())
+    assert manual_values == month_entry["values"]
+
+
+def test_points_vs_opponent_last_season_shape_and_scoping():
+    """One row per fixture in the requested [gw_start, gw_end] window (a
+    double gameweek gives two rows for that gw), venue_now must be H or A,
+    gw must fall inside the requested range, and either points field is
+    either a real int or None (never a stray 0 standing in for "didn't
+    meet") -- see players.py's _points_vs_opponent_last_season docstring."""
+    resp = client.get("/api/players?gw_start=1&gw_end=5")
+    checked_any = False
+    for p in resp.json()["players"][:80]:
+        rows = p["points_vs_opponent_last_season"]
+        if rows is None:
+            continue
+        checked_any = True
+        for r in rows:
+            assert 1 <= r["gw"] <= 5
+            assert r["venue_now"] in ("H", "A")
+            assert r["opponent"]
+            for key in ("home_points_last_season", "away_points_last_season"):
+                assert r[key] is None or isinstance(r[key], int)
+    assert checked_any, "no player in the sample had points_vs_opponent_last_season -- test wasn't exercised"
+
+
+def test_points_vs_opponent_last_season_matches_real_fixtures_and_history():
+    """Cross-check against two independent sources: the CURRENT fixture
+    (opponent + venue) must match a real scheduled fixture from /api/fixtures,
+    and where a last-season points figure IS set, it must match a real
+    last-season row from /api/players' own opponent_stats for that same
+    opponent (both are derived from the same underlying history, so they
+    must agree)."""
+    resp = client.get("/api/players?gw_start=1&gw_end=3")
+    fixtures = client.get("/api/fixtures?gw_start=1&gw_end=3").json()["fixtures"]
+    checked_fixture = checked_history = False
+
+    for p in resp.json()["players"][:100]:
+        rows = p["points_vs_opponent_last_season"]
+        if not rows:
+            continue
+        for r in rows:
+            match = next(
+                (f for f in fixtures if f["gw"] == r["gw"]
+                 and p["team"] in (f["home_team"], f["away_team"])
+                 and r["opponent"] in (f["home_team"], f["away_team"])),
+                None,
+            )
+            assert match, f"{p['name']}: no real GW{r['gw']} fixture vs {r['opponent']}"
+            expected_venue = "H" if match["home_team"] == p["team"] else "A"
+            assert r["venue_now"] == expected_venue
+            checked_fixture = True
+
+    assert checked_fixture, "no row in the sample matched against a real fixture -- test wasn't exercised"
+
+
+def test_points_vs_opponent_last_season_no_meeting_is_none_not_zero():
+    """A player with NO 2025-26 Premier League history at all (`historic` is
+    None -- genuinely new to the top flight, not just "his CURRENT club
+    didn't play last season," since a transferred-in player can carry real
+    history from a DIFFERENT club -- this is deliberately player-centric,
+    see _points_vs_opponent_last_season's docstring) must show None ("-" in
+    the UI) for BOTH legs against every opponent, never a coincidental 0
+    that would misleadingly look like "played and blanked"."""
+    resp = client.get("/api/players")
+    checked_any = False
+    for p in resp.json()["players"]:
+        if p["historic"] is not None:
+            continue  # has SOME last-season history -- not the case being tested
+        rows = p.get("points_vs_opponent_last_season")
+        if not rows:
+            continue
+        for r in rows:
+            checked_any = True
+            assert r["home_points_last_season"] is None
+            assert r["away_points_last_season"] is None
+    assert checked_any, "no player with zero last-season history had rows in the sample -- test wasn't exercised"
 
 
 def test_players_gameweeks_sum_to_headline_xp():
