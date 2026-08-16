@@ -387,7 +387,26 @@ describe('PlayerScout', () => {
     expect(within(dialog).getByText(/not enough historical data/i)).toBeInTheDocument()
   })
 
-  it('passes gwStart/gwEnd from the inputs to usePlayers', async () => {
+  it('the Apply button is disabled with no pending GW change, becomes enabled once the draft differs, and clicking it commits', async () => {
+    const spy = vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+
+    const applyButton = screen.getByRole('button', { name: /apply/i })
+    expect(applyButton).toBeDisabled()
+
+    const [, toInput] = screen.getAllByRole('spinbutton')
+    await user.clear(toInput)
+    await user.type(toInput, '4')
+    expect(applyButton).toBeEnabled()
+    expect(spy).toHaveBeenLastCalledWith(1, 1) // still uncommitted
+
+    await user.click(applyButton)
+    expect(spy).toHaveBeenLastCalledWith(1, 4)
+    expect(applyButton).toBeDisabled() // matches again post-commit
+  })
+
+  it('passes gwStart/gwEnd from the inputs to usePlayers, only once committed (Enter), not on every keystroke', async () => {
     const spy = vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
     renderWithClient(<PlayerScout />)
     const user = userEvent.setup()
@@ -395,7 +414,10 @@ describe('PlayerScout', () => {
     const [, toInput] = screen.getAllByRole('spinbutton')
     await user.clear(toInput)
     await user.type(toInput, '5')
+    // Not yet committed -- still the initial (1, 1) while typing.
+    expect(spy).toHaveBeenLastCalledWith(1, 1)
 
+    await user.keyboard('{Enter}')
     expect(spy).toHaveBeenLastCalledWith(1, 5)
   })
 
@@ -544,10 +566,13 @@ describe('PlayerScout', () => {
     renderWithClient(<PlayerScout />)
     const user = userEvent.setup()
 
-    // Need a multi-gameweek range for the per-GW panel to be meaningful
+    // Need a multi-gameweek range for the per-GW panel to be meaningful --
+    // committed via Enter (the GW inputs no longer update live on every
+    // keystroke, see the "only once committed" test above).
     const [, toInput] = screen.getAllByRole('spinbutton')
     await user.clear(toInput)
     await user.type(toInput, '3')
+    await user.keyboard('{Enter}')
 
     await user.click(screen.getByText('Erling Haaland'))
     const dialog = screen.getByRole('dialog')
@@ -599,6 +624,7 @@ describe('PlayerScout', () => {
     const [, toInput] = screen.getAllByRole('spinbutton')
     await user.clear(toInput)
     await user.type(toInput, '3')
+    await user.keyboard('{Enter}')
 
     // Default sort (overall xP) has Haaland first. Van Dijk has the LOWEST
     // overall xP but the single BEST gameweek (GW2, 3.0) of anyone -- sorting

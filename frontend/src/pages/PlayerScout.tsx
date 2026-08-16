@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ChevronsUpDown, Plus, X } from 'lucide-react'
+import { ChevronsUpDown, Plus, X, Check } from 'lucide-react'
 import { usePlayers, useFixtures } from '../api/hooks'
 import PlayerShirt from '../components/PlayerShirt'
 import FdrStrip, { buildFdrByTeam } from '../components/FdrStrip'
@@ -65,6 +65,27 @@ function fieldValue(p: Player, field: SortField, avgFdrByTeam: Record<string, nu
 export default function PlayerScout() {
   const [gwStart, setGwStart] = useState(1)
   const [gwEnd, setGwEnd] = useState(1)
+  // Local DRAFT values for the two GW inputs, decoupled from gwStart/gwEnd
+  // above (which are what actually drives the fetch). Every fetch here can
+  // genuinely take a few real seconds -- see backend/app/routers/players.py's
+  // caching comments -- so updating on every keystroke/arrow-click, the
+  // previous behavior, meant typing "12" into a field fired a slow request
+  // for "1" and then immediately another for "12". Standard pattern for a
+  // range filter backing an expensive fetch (see e.g. any e-commerce price
+  // filter): edit freely, commit explicitly -- Enter or the Apply button --
+  // rather than firing on every intermediate keystroke.
+  const [draftGwStart, setDraftGwStart] = useState(1)
+  const [draftGwEnd, setDraftGwEnd] = useState(1)
+  const hasPendingGwChange = draftGwStart !== gwStart || draftGwEnd !== gwEnd
+
+  function applyGwRange() {
+    setGwStart(draftGwStart)
+    setGwEnd(draftGwEnd)
+  }
+  function handleGwKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') applyGwRange()
+  }
+
   const [position, setPosition] = useState<Position>('ALL')
   const [team, setTeam] = useState<string>('ALL')
   const [priceMin, setPriceMin] = useState<string>('')
@@ -179,16 +200,30 @@ export default function PlayerScout() {
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <div className="flex items-center gap-2">
           <label className="text-sm text-slate-500">From GW</label>
-          <input type="number" min={1} max={38} value={gwStart}
-            onChange={(e) => setGwStart(Number(e.target.value))}
+          <input type="number" min={1} max={38} value={draftGwStart}
+            onChange={(e) => setDraftGwStart(Number(e.target.value))}
+            onKeyDown={handleGwKeyDown}
             className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-slate-500">To GW</label>
-          <input type="number" min={1} max={38} value={gwEnd}
-            onChange={(e) => setGwEnd(Number(e.target.value))}
+          <input type="number" min={1} max={38} value={draftGwEnd}
+            onChange={(e) => setDraftGwEnd(Number(e.target.value))}
+            onKeyDown={handleGwKeyDown}
             className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
         </div>
+        {/* Only lit up emerald once there's something to actually apply --
+            otherwise a plain, unobtrusive button, so it doesn't look like a
+            constant demand for action when the range already matches what's
+            loaded. Pressing Enter in either field above does the same thing. */}
+        <button onClick={applyGwRange} disabled={!hasPendingGwChange}
+          className={`flex items-center gap-1 text-sm font-medium px-3 py-1 rounded-md border ${
+            hasPendingGwChange
+              ? 'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700'
+              : 'bg-slate-50 border-slate-200 text-slate-300 cursor-default'
+          }`}>
+          <Check size={14} /> Apply
+        </button>
       </div>
 
       <div className="flex gap-3 mb-3 flex-wrap">
