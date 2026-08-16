@@ -223,10 +223,16 @@ export interface TeamGoalsVsOpponentEntry {
   gw: number
   opponent: string
   venue_now: 'H' | 'A'
-  home_gf_last_season: number | null
-  home_ga_last_season: number | null
-  away_gf_last_season: number | null
-  away_ga_last_season: number | null
+  // Averages across the last TEAM_GOALS_VS_OPPONENT_SEASONS (3) complete
+  // seasons -- not a single season's total -- so a *_games count of 0
+  // means "never met at that venue in that span" (shown as "-"), and 1-3
+  // means a real, if sometimes small, sample.
+  home_gf: number | null
+  home_ga: number | null
+  home_games: number
+  away_gf: number | null
+  away_ga: number | null
+  away_games: number
 }
 
 export interface FixturesResponse {
@@ -244,10 +250,11 @@ export interface FixturesResponse {
   // backend/app/routers/fixtures.py's _team_last_season_stats docstring.
   last_season_team_stats: Record<string, TeamLastSeasonStats>
   // Keyed by team name -- for each of THEIR fixtures in the requested
-  // [gw_start, gw_end] window, the opponent and goals scored/conceded
-  // against that SAME opponent last season, home/away legs separate.
-  // Mirrors Player Scout's points_vs_opponent_last_season, at team level.
-  // See backend/app/routers/fixtures.py's _team_goals_vs_opponent_last_season.
+  // [gw_start, gw_end] window, the opponent and AVERAGE goals scored/
+  // conceded against that SAME opponent across the last 3 complete
+  // seasons, home/away legs separate. Mirrors Player Scout's
+  // points_vs_opponent_last_season, at team level. See
+  // backend/app/routers/fixtures.py's _team_goals_vs_opponent.
   goals_vs_opponent: Record<string, TeamGoalsVsOpponentEntry[]>
 }
 

@@ -146,11 +146,14 @@ function OpponentTable({ title, entries, tone }: { title: string; entries: TeamO
 }
 
 // For each fixture in the CURRENTLY SELECTED gameweek range (Team Scout's
-// From/To GW inputs), goals scored/conceded (shown as "GF-GA") against that
-// SAME opponent last season -- home leg and away leg reported separately,
-// since a club meets each opponent once at each venue. The venue matching
-// THIS fixture is highlighted (emerald) -- "the same fixture, one year on".
-// A leg with no meeting at all last season (promoted opponent) shows "-".
+// From/To GW inputs), AVERAGE goals scored/conceded (shown as "GF-GA")
+// against that SAME opponent across the last 3 complete seasons -- home
+// leg and away leg reported separately, since a club meets each opponent
+// once at each venue per season. The venue matching THIS fixture is
+// highlighted (emerald) -- "the same fixture." A leg with zero meetings at
+// all across that span (promoted opponent) shows "-". Game count in
+// parentheses shows how many of the (up to) 3 seasons the average is
+// actually built from.
 //
 // Paginated 5 rows at a time, same pattern as Player Scout's equivalent
 // table -- a wide GW range would otherwise dump too many rows in here.
@@ -183,8 +186,9 @@ function GoalsVsOpponentTable({ entries }: { entries: TeamGoalsVsOpponentEntry[]
       ) : (
         <>
           <p className="text-[11px] text-slate-400 mb-2">
-            Goals scored-conceded against that same opponent last season -- highlighted cell is the leg
-            matching this fixture's venue. "-" means they didn't meet at that venue last season.
+            Average goals scored-conceded (as "GF-GA") against that same opponent over the last 3 seasons --
+            "(Ng)" is how many of those seasons they've actually met at that venue. Highlighted cell is the
+            leg matching this fixture's venue. "-" means they never met at that venue in the last 3 seasons.
           </p>
           <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
             <thead>
@@ -192,8 +196,8 @@ function GoalsVsOpponentTable({ entries }: { entries: TeamGoalsVsOpponentEntry[]
                 <th className="px-3 py-1.5 font-semibold">GW</th>
                 <th className="px-3 py-1.5 font-semibold">Opponent</th>
                 <th className="px-3 py-1.5 font-semibold">Venue</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Home (last season)</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Away (last season)</th>
+                <th className="px-3 py-1.5 text-right font-semibold">Home (avg, last 3 seasons)</th>
+                <th className="px-3 py-1.5 text-right font-semibold">Away (avg, last 3 seasons)</th>
               </tr>
             </thead>
             <tbody>
@@ -203,12 +207,12 @@ function GoalsVsOpponentTable({ entries }: { entries: TeamGoalsVsOpponentEntry[]
                   <td className="px-3 py-1.5 text-slate-800">{e.opponent}</td>
                   <td className="px-3 py-1.5 text-slate-500">{e.venue_now}</td>
                   <td className={`px-3 py-1.5 text-right ${e.venue_now === 'H' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
-                    {e.home_gf_last_season != null && e.home_ga_last_season != null
-                      ? `${e.home_gf_last_season}-${e.home_ga_last_season}` : '-'}
+                    {e.home_gf != null && e.home_ga != null
+                      ? `${e.home_gf.toFixed(2)}-${e.home_ga.toFixed(2)} (${e.home_games}g)` : '-'}
                   </td>
                   <td className={`px-3 py-1.5 text-right ${e.venue_now === 'A' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
-                    {e.away_gf_last_season != null && e.away_ga_last_season != null
-                      ? `${e.away_gf_last_season}-${e.away_ga_last_season}` : '-'}
+                    {e.away_gf != null && e.away_ga != null
+                      ? `${e.away_gf.toFixed(2)}-${e.away_ga.toFixed(2)} (${e.away_games}g)` : '-'}
                   </td>
                 </tr>
               ))}

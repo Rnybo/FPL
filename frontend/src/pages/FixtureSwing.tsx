@@ -94,22 +94,20 @@ export default function FixtureSwing() {
       // whatever range is selected, same as everything else on this page.
       const nextCs = inWindow.find((e) => e.cleanSheetProb != null)?.cleanSheetProb ?? null
 
-      // Next opponent + goals scored/conceded against that SAME opponent
-      // last season, whichever leg (home/away) matches the actual upcoming
-      // venue -- goalsVsOpponent is already gw-window-scoped and ordered by
-      // gw server-side, so its first entry IS the next fixture in range.
+      // Next opponent + AVERAGE goals scored/conceded against that SAME
+      // opponent across the last 3 seasons, whichever leg (home/away)
+      // matches the actual upcoming venue -- goalsVsOpponent is already
+      // gw-window-scoped and ordered by gw server-side, so its first entry
+      // IS the next fixture in range.
       const vsOppRows = goalsVsOpponent[team] ?? []
       const next = vsOppRows[0]
       const nextOpponent = next?.opponent ?? null
       const nextVenue: 'H' | 'A' | null = next?.venue_now ?? null
-      const nextGoalsFor = next
-        ? (next.venue_now === 'H' ? next.home_gf_last_season : next.away_gf_last_season)
-        : null
-      const nextGoalsAgainst = next
-        ? (next.venue_now === 'H' ? next.home_ga_last_season : next.away_ga_last_season)
-        : null
+      const nextGoalsFor = next ? (next.venue_now === 'H' ? next.home_gf : next.away_gf) : null
+      const nextGoalsAgainst = next ? (next.venue_now === 'H' ? next.home_ga : next.away_ga) : null
+      const nextGames = next ? (next.venue_now === 'H' ? next.home_games : next.away_games) : 0
 
-      return { team, entries: inWindow, avgFdr, nextCs, nextOpponent, nextVenue, nextGoalsFor, nextGoalsAgainst }
+      return { team, entries: inWindow, avgFdr, nextCs, nextOpponent, nextVenue, nextGoalsFor, nextGoalsAgainst, nextGames }
     })
     return rows.sort((a, b) => {
       const va = sortField === 'avgFdr' ? a.avgFdr
@@ -160,9 +158,9 @@ export default function FixtureSwing() {
         Which teams have the best run of fixtures coming up -- pick players from the top of this list,
         avoid the bottom. Ranked over GW{effectiveStart}
         {effectiveEnd !== effectiveStart ? `-${effectiveEnd}` : ''}. "Next" shows who they play next in this
-        range, and how many goals they scored/conceded against that SAME opponent last season (home/away as
-        relevant) -- click a team for the full breakdown across every gameweek in this range, plus last
-        season's complete home/away record.
+        range, and their AVERAGE goals scored/conceded against that SAME opponent across the last 3 seasons
+        (home/away as relevant) -- click a team for the full breakdown across every gameweek in this range,
+        plus last season's complete home/away record.
       </p>
 
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -230,10 +228,14 @@ export default function FixtureSwing() {
                 ) : '—'}
               </td>
               <td className="py-2 pr-3 text-right text-slate-500">
-                {row.nextGoalsFor != null ? row.nextGoalsFor : '—'}
+                {row.nextGoalsFor != null ? (
+                  <>{row.nextGoalsFor.toFixed(2)} <span className="text-[10px] text-slate-400">({row.nextGames}g)</span></>
+                ) : '—'}
               </td>
               <td className="py-2 pr-3 text-right text-slate-500">
-                {row.nextGoalsAgainst != null ? row.nextGoalsAgainst : '—'}
+                {row.nextGoalsAgainst != null ? (
+                  <>{row.nextGoalsAgainst.toFixed(2)} <span className="text-[10px] text-slate-400">({row.nextGames}g)</span></>
+                ) : '—'}
               </td>
             </tr>
           ))}

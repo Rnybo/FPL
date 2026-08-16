@@ -68,15 +68,15 @@ const MOCK_FIXTURES = {
   },
   goals_vs_opponent: {
     'Easy FC': [
-      { gw: 2, opponent: 'Filler United', venue_now: 'H', home_gf_last_season: 3, home_ga_last_season: 1, away_gf_last_season: 2, away_ga_last_season: 2 },
-      { gw: 3, opponent: 'Filler Rovers', venue_now: 'H', home_gf_last_season: 1, home_ga_last_season: 0, away_gf_last_season: 2, away_ga_last_season: 1 },
-      { gw: 4, opponent: 'Filler United', venue_now: 'H', home_gf_last_season: 3, home_ga_last_season: 1, away_gf_last_season: 2, away_ga_last_season: 2 },
-      { gw: 4, opponent: 'Filler Rovers', venue_now: 'A', home_gf_last_season: 1, home_ga_last_season: 0, away_gf_last_season: 2, away_ga_last_season: 1 },
-      { gw: 5, opponent: 'Promoted FC', venue_now: 'H', home_gf_last_season: null, home_ga_last_season: null, away_gf_last_season: null, away_ga_last_season: null },
-      { gw: 6, opponent: 'Team Y', venue_now: 'A', home_gf_last_season: 2, home_ga_last_season: 2, away_gf_last_season: 1, away_ga_last_season: 3 },
+      { gw: 2, opponent: 'Filler United', venue_now: 'H', home_gf: 3.0, home_ga: 1.0, home_games: 1, away_gf: 2.0, away_ga: 2.0, away_games: 1 },
+      { gw: 3, opponent: 'Filler Rovers', venue_now: 'H', home_gf: 1.0, home_ga: 0.0, home_games: 1, away_gf: 2.0, away_ga: 1.0, away_games: 1 },
+      { gw: 4, opponent: 'Filler United', venue_now: 'H', home_gf: 3.0, home_ga: 1.0, home_games: 1, away_gf: 2.0, away_ga: 2.0, away_games: 1 },
+      { gw: 4, opponent: 'Filler Rovers', venue_now: 'A', home_gf: 1.0, home_ga: 0.0, home_games: 1, away_gf: 2.0, away_ga: 1.0, away_games: 1 },
+      { gw: 5, opponent: 'Promoted FC', venue_now: 'H', home_gf: null, home_ga: null, home_games: 0, away_gf: null, away_ga: null, away_games: 0 },
+      { gw: 6, opponent: 'Team Y', venue_now: 'A', home_gf: 2.0, home_ga: 2.0, home_games: 1, away_gf: 1.0, away_ga: 3.0, away_games: 1 },
     ],
     'Hard FC': [
-      { gw: 2, opponent: 'Filler Rovers', venue_now: 'A', home_gf_last_season: 0, home_ga_last_season: 2, away_gf_last_season: 1, away_ga_last_season: 4 },
+      { gw: 2, opponent: 'Filler Rovers', venue_now: 'A', home_gf: 0.0, home_ga: 2.0, home_games: 1, away_gf: 1.0, away_ga: 4.0, away_games: 1 },
     ],
   },
 }
@@ -159,7 +159,10 @@ describe('FixtureSwing', () => {
     await user.click(screen.getByRole('button', { name: /apply/i }))
 
     const easyRow = screen.getByText('Easy FC').closest('tr')!
-    expect(within(easyRow).getByText('1.00')).toBeInTheDocument() // only GW2's FDR 1 now, not averaged with GW3/GW4
+    // "1.00" is now ambiguous (Avg FDR AND Next (conceded) can both show it) --
+    // Avg FDR is cell index 2 (Team, Fixtures, Avg FDR, ...).
+    const cells = within(easyRow).getAllByRole('cell')
+    expect(cells[2]).toHaveTextContent('1.00') // only GW2's FDR 1 now, not averaged with GW3/GW4
   })
 
   it('each fixture cell has a tooltip identifying the gameweek, opponent, and venue', () => {
@@ -195,22 +198,23 @@ describe('FixtureSwing', () => {
     expect(easyRowIndex).toBeLessThan(hardRowIndex) // 60% ranks above 5%
   })
 
-  it('shows the next opponent (with venue) and goals scored/conceded against them last season', () => {
+  it('shows the next opponent (with venue) and average goals scored/conceded against them, with a game count', () => {
     vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
     renderWithClient(<FixtureSwing />)
 
-    // Easy FC's first goals_vs_opponent entry: GW2 vs Filler United, home, 3-1.
+    // Easy FC's first goals_vs_opponent entry: GW2 vs Filler United, home, 3.00-1.00 (1 game).
     const easyRow = screen.getByText('Easy FC').closest('tr')!
     expect(within(easyRow).getByText('Filler United', { exact: false })).toBeInTheDocument()
     expect(within(easyRow).getAllByText('(H)').length).toBeGreaterThan(0)
-    expect(within(easyRow).getByText('3')).toBeInTheDocument() // goals scored
-    expect(within(easyRow).getByText('1')).toBeInTheDocument() // goals conceded
+    expect(within(easyRow).getByText(/3\.00/)).toBeInTheDocument() // goals scored
+    expect(within(easyRow).getByText(/1\.00/)).toBeInTheDocument() // goals conceded
+    expect(within(easyRow).getAllByText('(1g)').length).toBeGreaterThan(0)
 
-    // Hard FC's only entry: GW2 vs Filler Rovers, away, 1-4 (their own gf-ga).
+    // Hard FC's only entry: GW2 vs Filler Rovers, away, 1.00-4.00 (their own gf-ga).
     const hardRow = screen.getByText('Hard FC').closest('tr')!
     expect(within(hardRow).getByText('Filler Rovers', { exact: false })).toBeInTheDocument()
     expect(within(hardRow).getAllByText('(A)').length).toBeGreaterThan(0)
-    expect(within(hardRow).getByText('4')).toBeInTheDocument() // goals conceded (their away_ga)
+    expect(within(hardRow).getByText(/4\.00/)).toBeInTheDocument() // goals conceded (their away_ga)
   })
 
   it('a team with no goals_vs_opponent entries shows "—" for next opponent/goals/conceded, not a crash', () => {
@@ -320,12 +324,12 @@ describe('FixtureSwing', () => {
     await user.click(screen.getByText('Easy FC'))
     const dialog = screen.getByRole('dialog')
 
-    // GW2 vs Filler United, home -- "3-1" (home leg) should be highlighted,
-    // not the away leg ("2-2").
+    // GW2 vs Filler United, home -- "3.00-1.00 (1g)" (home leg) should be
+    // highlighted, not the away leg ("2.00-2.00 (1g)").
     const gw2Row = within(dialog).getByText('2').closest('tr')!
-    const homeCell = within(gw2Row).getByText('3-1')
+    const homeCell = within(gw2Row).getByText(/3\.00-1\.00/)
     expect(homeCell.className).toMatch(/bg-emerald-50/)
-    const awayCell = within(gw2Row).getByText('2-2')
+    const awayCell = within(gw2Row).getByText(/2\.00-2\.00/)
     expect(awayCell.className).not.toMatch(/bg-emerald-50/)
 
     // GW5 vs Promoted FC -- no history at all -- both legs show "-".

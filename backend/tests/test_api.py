@@ -695,10 +695,13 @@ def test_fixtures_last_season_team_stats_favorable_opponent_matches_a_real_upcom
 def test_fixtures_goals_vs_opponent_shape_and_scoping():
     """One row per fixture in the requested [gw_start, gw_end] window for
     EACH team (a double gameweek gives two rows for that gw), venue_now
-    must be H or A, gw must fall inside the requested range, and any goals
-    figure is either a real non-negative int or None (never a stray 0
-    standing in for "didn't meet") -- see fixtures.py's
-    _team_goals_vs_opponent_last_season docstring."""
+    must be H or A, gw must fall inside the requested range, each *_games
+    count is at most TEAM_GOALS_VS_OPPONENT_SEASONS, and any goals figure is
+    either a real non-negative float or None (never a stray 0 standing in
+    for "didn't meet") -- see fixtures.py's _team_goals_vs_opponent
+    docstring."""
+    from app.routers.fixtures import TEAM_GOALS_VS_OPPONENT_SEASONS
+
     resp = client.get("/api/fixtures?gw_start=1&gw_end=5")
     data = resp.json()
     assert "goals_vs_opponent" in data
@@ -711,26 +714,36 @@ def test_fixtures_goals_vs_opponent_shape_and_scoping():
             assert 1 <= r["gw"] <= 5
             assert r["venue_now"] in ("H", "A")
             assert r["opponent"]
-            for key in ("home_gf_last_season", "home_ga_last_season", "away_gf_last_season", "away_ga_last_season"):
-                assert r[key] is None or (isinstance(r[key], int) and r[key] >= 0)
+            assert 0 <= r["home_games"] <= TEAM_GOALS_VS_OPPONENT_SEASONS
+            assert 0 <= r["away_games"] <= TEAM_GOALS_VS_OPPONENT_SEASONS
+            for gf_key, ga_key, games_key in (("home_gf", "home_ga", "home_games"), ("away_gf", "away_ga", "away_games")):
+                if r[games_key] > 0:
+                    assert 0 <= r[gf_key] <= 10
+                    assert 0 <= r[ga_key] <= 10
+                else:
+                    assert r[gf_key] is None
+                    assert r[ga_key] is None
     assert checked_any, "no team in the sample had goals_vs_opponent rows -- test wasn't exercised"
 
 
-def test_fixtures_goals_vs_opponent_matches_real_fixtures_and_last_season_history():
+def test_fixtures_goals_vs_opponent_matches_real_fixtures_and_history():
     """Cross-check against two independent sources: the CURRENT fixture
     (opponent + venue) must match a real scheduled fixture in this same
-    response, and where a goals figure IS set, it must match a real
-    last-season row recomputed directly from the fixtures table (joined by
-    NAME -- team_id isn't stable across seasons, see module docstring)."""
+    response, and where a goals figure IS set, it must match a real AVERAGE
+    recomputed directly from the fixtures table across the last
+    TEAM_GOALS_VS_OPPONENT_SEASONS seasons (joined by NAME -- team_id isn't
+    stable across seasons, see module docstring)."""
     import sqlite3
     from app.config import DB_PATH
-    from app.routers.fixtures import LAST_COMPLETE_SEASON
+    from app.routers.fixtures import LAST_COMPLETE_SEASON, TEAM_GOALS_VS_OPPONENT_SEASONS, _recent_season_ids
 
     resp = client.get("/api/fixtures?gw_start=1&gw_end=3")
     data = resp.json()
     fixtures = data["fixtures"]
     checked_fixture = checked_history = False
 
+    season_ids = _recent_season_ids(LAST_COMPLETE_SEASON, TEAM_GOALS_VS_OPPONENT_SEASONS)
+    placeholders = ",".join("?" for _ in season_ids)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
@@ -747,40 +760,44 @@ def test_fixtures_goals_vs_opponent_matches_real_fixtures_and_last_season_histor
             assert r["venue_now"] == expected_venue
             checked_fixture = True
 
-            if r["home_gf_last_season"] is not None:
+            if r["home_gf"] is not None:
                 checked_history = True
                 real = conn.execute(
-                    """SELECT f.home_goals, f.away_goals FROM fixtures f
-                       JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
-                       JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
-                       WHERE f.season_id = ? AND f.finished = 1 AND th.name = ? AND ta.name = ?
-                             AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
-                    (LAST_COMPLETE_SEASON, team, r["opponent"]),
+                    f"""SELECT f.home_goals, f.away_goals FROM fixtures f
+                        JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+                        JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
+                        WHERE f.season_id IN ({placeholders}) AND f.finished = 1 AND th.name = ? AND ta.name = ?
+                              AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
+                    tuple(season_ids) + (team, r["opponent"]),
                 ).fetchall()
-                assert r["home_gf_last_season"] == sum(x["home_goals"] for x in real)
-                assert r["home_ga_last_season"] == sum(x["away_goals"] for x in real)
+                assert r["home_games"] == len(real)
+                assert r["home_gf"] == pytest.approx(sum(x["home_goals"] for x in real) / len(real), abs=0.01)
+                assert r["home_ga"] == pytest.approx(sum(x["away_goals"] for x in real) / len(real), abs=0.01)
 
     conn.close()
     assert checked_fixture, "no row matched against a real fixture -- test wasn't exercised"
-    assert checked_history, "no row had last-season history to cross-check -- test wasn't exercised"
+    assert checked_history, "no row had history to cross-check -- test wasn't exercised"
 
 
 def test_fixtures_goals_vs_opponent_no_meeting_is_none_not_zero():
-    """A newly-promoted opponent (no top-flight games last season at all)
-    must show None ("-" in the UI) for both legs, never a coincidental 0
-    that would misleadingly look like "met and drew 0-0"."""
+    """An opponent with NO top-flight games at all across the last
+    TEAM_GOALS_VS_OPPONENT_SEASONS seasons (e.g. only just promoted) must
+    show None ("-" in the UI) for both legs, never a coincidental 0 that
+    would misleadingly look like "met and drew 0-0"."""
     import sqlite3
     from app.config import DB_PATH
-    from app.routers.fixtures import LAST_COMPLETE_SEASON
+    from app.routers.fixtures import LAST_COMPLETE_SEASON, TEAM_GOALS_VS_OPPONENT_SEASONS, _recent_season_ids
 
+    season_ids = _recent_season_ids(LAST_COMPLETE_SEASON, TEAM_GOALS_VS_OPPONENT_SEASONS)
+    placeholders = ",".join("?" for _ in season_ids)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    played_last_season = {
+    played_recently = {
         r["name"] for r in conn.execute(
-            """SELECT DISTINCT t.name FROM fixtures f
-               JOIN teams t ON t.team_id IN (f.home_team_id, f.away_team_id) AND t.season_id = ?
-               WHERE f.season_id = ?""",
-            (LAST_COMPLETE_SEASON, LAST_COMPLETE_SEASON),
+            f"""SELECT DISTINCT t.name FROM fixtures f
+                JOIN teams t ON t.team_id IN (f.home_team_id, f.away_team_id) AND t.season_id = f.season_id
+                WHERE f.season_id IN ({placeholders})""",
+            tuple(season_ids),
         ).fetchall()
     }
     conn.close()
@@ -790,14 +807,16 @@ def test_fixtures_goals_vs_opponent_no_meeting_is_none_not_zero():
     checked_any = False
     for team, rows in data["goals_vs_opponent"].items():
         for r in rows:
-            if r["opponent"] in played_last_season:
+            if r["opponent"] in played_recently:
                 continue  # opponent has real history -- not the case being tested
             checked_any = True
-            assert r["home_gf_last_season"] is None
-            assert r["home_ga_last_season"] is None
-            assert r["away_gf_last_season"] is None
-            assert r["away_ga_last_season"] is None
-    assert checked_any, "no row referenced a newly-promoted opponent -- test wasn't exercised"
+            assert r["home_gf"] is None
+            assert r["home_ga"] is None
+            assert r["home_games"] == 0
+            assert r["away_gf"] is None
+            assert r["away_ga"] is None
+            assert r["away_games"] == 0
+    assert checked_any, "no row referenced a team with zero recent history -- test wasn't exercised"
 
 
 def test_squad_optimal_respects_budget_and_positions():
