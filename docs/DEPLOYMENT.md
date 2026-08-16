@@ -101,12 +101,20 @@ whole deploy (this happened once already -- see git history around
   gcloud compute ssh fpl-backend --zone=us-west1-b --command="docker cp repo/data/raw repo-backend-1:/srv/data/raw && docker exec repo-backend-1 python3 /srv/scripts/load_player_gameweeks_to_cache.py" --quiet
   ```
 - **CORS allowlist**: the backend's `ALLOWED_ORIGINS` env var (set in a `.env`
-  file directly on the VM, not in git) is pinned to the current Vercel
-  production URL. If that URL ever changes (e.g. the Vercel project is
-  recreated), update it:
+  file directly on the VM, not in git) is comma-separated -- currently pinned
+  to BOTH of Vercel's stable production aliases for this project
+  (`frontend-six-orcin-32.vercel.app` AND `frontend-fpl12.vercel.app` --
+  Vercel gives a project more than one stable alias, and a request from
+  whichever one ISN'T listed here gets silently CORS-blocked in the browser,
+  even though the backend itself returns 200 -- this happened once already,
+  looked like "stuck on loading players" with no visible error). If either
+  alias ever changes (e.g. the Vercel project is recreated), or a new stable
+  alias is added, update the list:
   ```powershell
-  gcloud compute ssh fpl-backend --zone=us-west1-b --command="cd repo && echo 'ALLOWED_ORIGINS=<new-url>' > .env && docker compose up -d"
+  gcloud compute ssh fpl-backend --zone=us-west1-b --command="cd repo && echo 'ALLOWED_ORIGINS=<url-1>,<url-2>' > .env && docker compose up -d"
   ```
+  Check `vercel inspect <any-recent-deployment-url>` (from `frontend/`) to see
+  the full current list of aliases if unsure.
 - **HTTPS hostname**: tied to the VM's IP via sslip.io (`35-252-212-174.sslip.io`).
   If the VM is ever recreated with a new IP, update `deploy/Caddyfile`'s
   hostname to match and re-run `sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
