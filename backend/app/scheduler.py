@@ -18,6 +18,16 @@ from app.config import SCRIPTS_DIR
 
 scheduler = BackgroundScheduler()
 
+# Which scripts actually change data that /api/players' in-process cache is
+# built from (see players.py's _cache/invalidate_players_cache) -- roster
+# (prices, team assignments), fixtures (opponents, upcoming schedule), live
+# gameweek stats, and predictions all feed it; only the team-news job
+# doesn't touch anything players.py queries at all.
+_INVALIDATES_PLAYERS_CACHE = {
+    "fetch_current_roster.py", "fetch_upcoming_fixtures.py",
+    "fetch_live_gameweek_stats.py", "predict_upcoming.py",
+}
+
 
 def _run_script(name: str):
     script_path = SCRIPTS_DIR / name
@@ -29,6 +39,14 @@ def _run_script(name: str):
     print(f"[scheduler] {name}: {status}")
     if result.returncode != 0:
         print(result.stderr[-2000:])
+    elif name in _INVALIDATES_PLAYERS_CACHE:
+        # Runs in the SAME process as the FastAPI app (this is a background
+        # thread, not a separate process, unlike the script subprocess above)
+        # -- importing here (not at module top) avoids a circular import
+        # between scheduler.py and the routers package at startup.
+        from app.routers.players import invalidate_players_cache
+        invalidate_players_cache()
+        print(f"[scheduler] {name}: players cache invalidated")
 
 
 def start():
