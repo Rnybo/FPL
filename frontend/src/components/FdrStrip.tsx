@@ -21,13 +21,24 @@ export function buildFdrByTeam(fixtures: Fixture[]): Record<string, number[]> {
   return byTeam
 }
 
-export default function FdrStrip({ difficulties, max = 8 }: { difficulties: number[]; max?: number }) {
-  const shown = difficulties.slice(0, max)
-  if (shown.length === 0) return <span className="text-xs text-slate-300">—</span>
+// Wraps into rows of `perRow` (default 8) rather than truncating -- shows
+// EVERY selected gameweek's difficulty, however many there are, e.g. GW1-16
+// selected renders as two rows of 8 (GW1-8, then GW9-16), not just the
+// first 8 with the rest silently dropped.
+export default function FdrStrip({ difficulties, perRow = 8 }: { difficulties: number[]; perRow?: number }) {
+  if (difficulties.length === 0) return <span className="text-xs text-slate-300">—</span>
+  const rows: number[][] = []
+  for (let i = 0; i < difficulties.length; i += perRow) {
+    rows.push(difficulties.slice(i, i + perRow))
+  }
   return (
-    <div className="flex gap-0.5">
-      {shown.map((d, i) => (
-        <div key={i} title={`FDR ${d}`} className={`w-4 h-4 rounded-sm ${FDR_COLORS[d] ?? 'bg-slate-200'}`} />
+    <div className="flex flex-col gap-0.5">
+      {rows.map((row, r) => (
+        <div key={r} className="flex gap-0.5">
+          {row.map((d, i) => (
+            <div key={i} title={`FDR ${d}`} className={`w-4 h-4 rounded-sm ${FDR_COLORS[d] ?? 'bg-slate-200'}`} />
+          ))}
+        </div>
       ))}
     </div>
   )

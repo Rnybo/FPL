@@ -548,7 +548,9 @@ describe('PlayerScout', () => {
     renderWithClient(<PlayerScout />)
     const user = userEvent.setup()
 
-    await user.click(screen.getByRole('button', { name: /next 8 gws \(fdr\)/i }))
+    // Header now reflects the ACTUAL selected range (GW1 by default here),
+    // not a fixed "Next 8 GWs" independent of it.
+    await user.click(screen.getByRole('button', { name: /gw1 \(fdr\)/i }))
     // Liverpool (FDR 1, easiest) -- Salah then van Dijk (tied, original relative
     // order preserved by a stable sort); Man City (FDR 5, hardest) -- Haaland last.
     let rows = screen.getAllByRole('row').slice(1)
@@ -556,9 +558,27 @@ describe('PlayerScout', () => {
     expect(rows[1]).toHaveTextContent('Virgil van Dijk')
     expect(rows[2]).toHaveTextContent('Erling Haaland')
 
-    await user.click(screen.getByRole('button', { name: /next 8 gws \(fdr\)/i })) // reverse -> hardest first
+    await user.click(screen.getByRole('button', { name: /gw1 \(fdr\)/i })) // reverse -> hardest first
     rows = screen.getAllByRole('row').slice(1)
     expect(rows[0]).toHaveTextContent('Erling Haaland')
+  })
+
+  it('the FDR header/fetch reflects the SELECTED gameweek range, not a fixed 8-gw lookahead', async () => {
+    const fixturesSpy = vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+
+    expect(screen.getByRole('button', { name: /gw1 \(fdr\)/i })).toBeInTheDocument()
+    expect(fixturesSpy).toHaveBeenLastCalledWith(undefined, 1, 1) // exactly GW1, not GW1-8
+
+    const [, toInput] = screen.getAllByRole('spinbutton')
+    await user.clear(toInput)
+    await user.type(toInput, '12')
+    await user.keyboard('{Enter}')
+
+    expect(screen.getByRole('button', { name: /gw1-12 \(fdr\)/i })).toBeInTheDocument()
+    expect(fixturesSpy).toHaveBeenLastCalledWith(undefined, 1, 12) // exactly the selected range
   })
 
   it('opening a player dialog shows xP broken down by gameweek', async () => {

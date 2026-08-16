@@ -6,9 +6,10 @@ import FdrStrip, { buildFdrByTeam } from '../components/FdrStrip'
 import PlayerDetailModal from '../components/PlayerDetailModal'
 import type { Player, XpBreakdown, OutcomeProbabilities } from '../api/types'
 
-const FDR_LOOKAHEAD = 8 // gameweeks of fixture difficulty to show, independent of
-                          // the xP optimization window -- lets you see a team's
-                          // fixtures staying easy even beyond a short selected range
+const FDR_PER_ROW = 8 // wrap width for the FDR strip, not a fetch/lookahead limit --
+                        // the actual range shown/fetched is whatever GW range is
+                        // selected (see gwStart/gwEnd below); a selection wider
+                        // than this wraps into multiple rows of FDR_PER_ROW each
 
 type Position = 'ALL' | Player['position']
 type SortField = 'xP' | 'price' | 'name' | 'valuePerPrice' | 'fdr' | 'lastSeasonPts' | keyof XpBreakdown | `gw:${number}`
@@ -44,11 +45,12 @@ function sortFieldLabel(field: SortField): string {
   return labels[field as keyof typeof labels]
 }
 
-// avgFdrByTeam: mean fixture difficulty over the shown window, LOWER = easier
-// fixtures -- see buildFdrByTeam in FdrStrip.tsx for how it's derived. A team
-// with no fixture data in the window (a rare full-blank across all
-// FDR_LOOKAHEAD gameweeks) falls back to 3 (neutral), so it doesn't
-// artificially look like the easiest OR hardest run when sorted.
+// avgFdrByTeam: mean fixture difficulty over the SELECTED gameweek range
+// (gwStart-gwEnd), LOWER = easier fixtures -- see buildFdrByTeam in
+// FdrStrip.tsx for how it's derived. A team with no fixture data in the
+// range (e.g. a blank across the whole selection) falls back to 3
+// (neutral), so it doesn't artificially look like the easiest OR hardest
+// run when sorted.
 function fieldValue(p: Player, field: SortField, avgFdrByTeam: Record<string, number>): number | string {
   if (field === 'name') return p.name
   if (field === 'xP' || field === 'price') return p[field]
@@ -95,7 +97,11 @@ export default function PlayerScout() {
   const [sortLevels, setSortLevels] = useState<SortLevel[]>([{ field: 'xP', dir: 'desc' }])
 
   const { data, isLoading, isError, error } = usePlayers(gwStart, gwEnd)
-  const { data: fixturesData } = useFixtures(undefined, gwStart, gwStart + FDR_LOOKAHEAD - 1)
+  // Exactly the SELECTED range now, not a fixed 8-gw lookahead independent of
+  // it -- the FDR column shows/sorts by whichever gameweeks are actually
+  // chosen, wrapping into rows of FDR_PER_ROW if that's a wide range (see
+  // FdrStrip.tsx).
+  const { data: fixturesData } = useFixtures(undefined, gwStart, gwEnd)
   const fdrByTeam = useMemo(
     () => buildFdrByTeam(fixturesData?.fixtures ?? []),
     [fixturesData]
@@ -103,8 +109,7 @@ export default function PlayerScout() {
   const avgFdrByTeam = useMemo(() => {
     const out: Record<string, number> = {}
     for (const [t, difficulties] of Object.entries(fdrByTeam)) {
-      const shown = difficulties.slice(0, FDR_LOOKAHEAD)
-      if (shown.length > 0) out[t] = shown.reduce((s, d) => s + d, 0) / shown.length
+      if (difficulties.length > 0) out[t] = difficulties.reduce((s, d) => s + d, 0) / difficulties.length
     }
     return out
   }, [fdrByTeam])
@@ -324,7 +329,7 @@ export default function PlayerScout() {
             <SortableHeader field="xP" label="xP" sortLevels={sortLevels} onClick={sortByColumn} align="right" emphasize />
             <SortableHeader field="valuePerPrice" label="xP/£m" sortLevels={sortLevels} onClick={sortByColumn} align="right" />
             <SortableHeader field="lastSeasonPts" label="Total pts (last season)" sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
-            <SortableHeader field="fdr" label={`Next ${FDR_LOOKAHEAD} GWs (FDR)`} sortLevels={sortLevels} onClick={sortByColumn} align="left" />
+            <SortableHeader field="fdr" label={`GW${gwStart}${gwEnd !== gwStart ? `-${gwEnd}` : ''} (FDR)`} sortLevels={sortLevels} onClick={sortByColumn} align="left" />
             {COLUMN_KEYS.map((key) => (
               <SortableHeader key={key} field={key} label={BREAKDOWN_LABELS[key]} sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
             ))}
@@ -418,7 +423,7 @@ function PlayerRow({ player, fdr, onClick, index }: {
       <td className="py-2 pr-3 text-right text-slate-500">
         {player.last_season_total_points ?? 0}
       </td>
-      <td className="py-2 pr-3"><FdrStrip difficulties={fdr} /></td>
+      <td className="py-2 pr-3"><FdrStrip difficulties={fdr} perRow={FDR_PER_ROW} /></td>
       {COLUMN_KEYS.map((key) => {
         const value = player.breakdown?.[key] ?? 0
         // COLUMN_KEYS is always exactly the 4 keys OutcomeProbabilities has
