@@ -88,6 +88,27 @@ whole deploy (this happened once already -- see git history around
   is exactly what caused a real production 500 once: `captain_simulation.py`
   querying a `starts` column that existed locally but not on the VM, because
   the schema change had no automatic path there.
+
+  **Known gotcha (happened once already):** `schema.sql` itself lives under
+  `data/`, which the Dockerfile documents as being seeded into a NAMED
+  DOCKER VOLUME on first container creation -- and a named volume, once
+  created, is NOT overwritten by the image's copy of that directory on
+  subsequent `docker compose up -d --build` runs. That means a schema.sql
+  change committed to git can rebuild the image fine, `git pull` fine on the
+  VM's host checkout, yet the RUNNING container still sees the OLD
+  schema.sql from whenever the volume was first created -- so
+  `ensure_schema.py` reports "0 columns newly added" even though the real
+  column is missing, and the very next request 500s with "no such column".
+  If `ensure_schema.py` claims nothing changed but a request then 500s on a
+  column that should be new, this is almost certainly why -- fix by forcing
+  the current schema.sql into the volume before re-running the migration:
+  ```powershell
+  gcloud compute ssh fpl-backend --zone=us-west1-b --command="docker cp repo/data/schema.sql repo-backend-1:/srv/data/schema.sql && docker exec repo-backend-1 python3 /srv/scripts/ensure_schema.py"
+  ```
+  (`repo/data/schema.sql` is the HOST's git checkout, already fresh from
+  `git pull` -- this just pushes that same file into the volume the
+  container actually reads from.)
+
   **What it does NOT cover**: backfilling actual historical DATA that a new
   column needs (e.g. adding a column is automatic, but populating it from
   `data/raw/fpl_api/*/merged_gw.csv` -- also not in git -- still needs a
@@ -99,6 +120,17 @@ whole deploy (this happened once already -- see git history around
     gcloud compute scp "data\raw\fpl_api\$s\merged_gw.csv" "fpl-backend:repo/data/raw/fpl_api/$s/merged_gw.csv" --zone=us-west1-b --quiet
   }
   gcloud compute ssh fpl-backend --zone=us-west1-b --command="docker cp repo/data/raw repo-backend-1:/srv/data/raw && docker exec repo-backend-1 python3 /srv/scripts/load_player_gameweeks_to_cache.py" --quiet
+  ```
+  Similarly, a new column that needs a one-time FETCH (not a script that
+  reads local files) to backfill -- e.g. `ownership_pct`, populated by
+  `fetch_current_roster.py` from the live FPL API, not from any local file --
+  also needs a manual one-time run on the VM after the schema migration, plus
+  a `docker compose restart backend` afterward to clear the in-process
+  players cache (see players.py's `invalidate_players_cache`) so the newly-
+  populated column is actually picked up rather than serving the
+  already-warmed (all-NULL) cached result:
+  ```powershell
+  gcloud compute ssh fpl-backend --zone=us-west1-b --command="docker exec repo-backend-1 python3 /srv/scripts/fetch_current_roster.py && cd repo && docker compose restart backend"
   ```
 - **CORS allowlist**: the backend's `ALLOWED_ORIGINS` env var (set in a `.env`
   file directly on the VM, not in git) is comma-separated -- currently pinned
