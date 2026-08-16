@@ -145,7 +145,7 @@ export default function FixtureSwing() {
 
   return (
     <div className="p-3 sm:p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold text-slate-900 mb-1">Fixture Swing</h1>
+      <h1 className="text-2xl font-bold text-slate-900 mb-1">Team Scout</h1>
       <p className="text-slate-500 text-sm mb-4">
         Which teams have the best run of fixtures coming up -- pick players from the top of this list,
         avoid the bottom. Ranked over GW{effectiveStart}

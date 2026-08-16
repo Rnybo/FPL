@@ -8,10 +8,10 @@ import ComingSoon from './pages/ComingSoon'
 
 const NAV = [
   { to: '/', label: 'Player Scout' },
-  { to: '/squad', label: 'Squad Builder' },
+  { to: '/fixtures', label: 'Team Scout' },
+  { to: '/squad', label: 'Fantasy Team Builder' },
   { to: '/league', label: 'League Hub' },
   { to: '/team', label: 'My Team' },
-  { to: '/fixtures', label: 'Fixture Swing' },
   { to: '/model', label: 'Model Transparency' },
 ]
 
