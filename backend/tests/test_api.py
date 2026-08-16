@@ -516,6 +516,75 @@ def test_fixtures_clean_sheet_prob_matches_captain_sim_inputs_directly():
     assert target["home_clean_sheet_prob"] == pytest.approx(row["p_clean_sheet"], abs=0.001)
 
 
+def test_fixtures_recent_form_is_present_and_well_formed():
+    """Every current team with any real finished-match history at all should
+    have a recent_form entry -- gf_per_game/ga_per_game are real per-game
+    averages (small, non-negative-ish floats, not raw totals), and games is
+    at most RECENT_FORM_GAMES."""
+    from app.routers.fixtures import RECENT_FORM_GAMES
+
+    resp = client.get("/api/fixtures")
+    data = resp.json()
+    assert "recent_form" in data
+    form = data["recent_form"]
+    assert len(form) > 0
+    for team, f in form.items():
+        assert team  # non-empty
+        assert 1 <= f["games"] <= RECENT_FORM_GAMES
+        assert 0 <= f["gf_per_game"] <= 10  # sane per-game bounds
+        assert 0 <= f["ga_per_game"] <= 10
+
+
+def test_fixtures_recent_form_falls_back_across_season_boundary_when_current_season_has_no_finished_games():
+    """The actual bug this exists to fix: pre-season, CURRENT_SEASON has
+    ZERO finished fixtures of its own -- recent_form must still be populated
+    by falling back to last season's closing games, not show nothing for
+    every team just because the new season hasn't kicked off yet."""
+    resp = client.get("/api/fixtures")
+    data = resp.json()
+    current_season_finished = [f for f in data["fixtures"] if f["finished"]]
+    if current_season_finished:
+        pytest.skip("current season already has finished fixtures -- this test targets the pre-season gap specifically")
+    assert len(data["recent_form"]) > 0, "recent_form was empty despite no current-season finished games -- fallback isn't working"
+
+
+def test_fixtures_recent_form_matches_a_manual_recomputation():
+    """Recompute one real team's recent form directly from the fixtures
+    table (any season, not just current) and confirm it matches exactly --
+    not just structurally plausible."""
+    import sqlite3
+    from app.config import DB_PATH, CURRENT_SEASON
+    from app.routers.fixtures import RECENT_FORM_GAMES
+
+    resp = client.get("/api/fixtures")
+    form = resp.json()["recent_form"]
+    assert form, "no team had recent_form -- test wasn't exercised"
+    team_name = next(iter(form))
+    expected = form[team_name]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    team_id = conn.execute(
+        "SELECT team_id FROM teams WHERE season_id = ? AND name = ?", (CURRENT_SEASON, team_name)
+    ).fetchone()["team_id"]
+    rows = conn.execute(
+        """SELECT home_team_id, away_team_id, home_goals, away_goals, kickoff_time
+           FROM fixtures
+           WHERE finished = 1 AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+                 AND (home_team_id = ? OR away_team_id = ?)
+           ORDER BY kickoff_time""",
+        (team_id, team_id),
+    ).fetchall()
+    conn.close()
+
+    recent = rows[-RECENT_FORM_GAMES:]
+    gf = [r["home_goals"] if r["home_team_id"] == team_id else r["away_goals"] for r in recent]
+    ga = [r["away_goals"] if r["home_team_id"] == team_id else r["home_goals"] for r in recent]
+    assert expected["games"] == len(recent)
+    assert expected["gf_per_game"] == pytest.approx(sum(gf) / len(gf), abs=0.01)
+    assert expected["ga_per_game"] == pytest.approx(sum(ga) / len(ga), abs=0.01)
+
+
 def test_squad_optimal_respects_budget_and_positions():
     resp = client.get("/api/squad/optimal")
     assert resp.status_code == 200

@@ -11,22 +11,29 @@ const DEFAULT_WINDOW = 8
 // How many of a team's most recent FINISHED games "recent form" looks back
 // across -- independent of the GW window above (that's forward-looking;
 // this is deliberately backward-looking, so it stays fixed regardless of
-// which upcoming range is selected).
+// which upcoming range is selected). Matches the backend's own
+// RECENT_FORM_GAMES -- just for the label text below, the actual grouping
+// happens server-side now (see recent_form below).
 const FORM_GAMES = 5
 
 type SortField = 'avgFdr' | 'nextCs' | 'gf' | 'ga'
 
 // "Which teams have the best run of fixtures coming up" -- a standalone,
 // team-centric view, distinct from Player Scout's per-player FDR column.
-// Fetches the WHOLE season's fixtures once (no gw filter) and does all the
-// windowing/sorting client-side -- no backend changes needed for the FDR
-// ranking or recent-form columns, this reuses the exact same /api/fixtures
-// data Player Scout already has, just grouped and ranked by TEAM instead of
-// shown alongside individual players. Clean-sheet % DOES rely on a backend
-// addition (see fixtures.py's home/away_clean_sheet_prob).
+// Fetches the WHOLE season's fixtures once (no gw filter) and does the FDR
+// windowing/sorting client-side -- no backend changes needed for that part,
+// this reuses the exact same /api/fixtures data Player Scout already has,
+// just grouped and ranked by TEAM instead of shown alongside individual
+// players. Clean-sheet % and recent form DO rely on backend additions (see
+// fixtures.py's home/away_clean_sheet_prob and recent_form) -- recent form
+// specifically needed to be server-side so it could span a SEASON
+// boundary: pre-season, the current season alone has zero finished games,
+// so a client-side-only computation restricted to what /api/fixtures
+// returns (current season only) would show nothing for every team.
 export default function FixtureSwing() {
   const { data, isLoading, isError, error } = useFixtures()
   const fixtures = useMemo(() => data?.fixtures ?? [], [data])
+  const recentForm = data?.recent_form ?? {}
 
   // "Now" = the earliest gameweek with at least one unplayed fixture --
   // falls back to 1 if the whole season's fixtures are already finished (end
@@ -79,28 +86,6 @@ export default function FixtureSwing() {
 
   const teamFixtureList = useMemo(() => buildTeamFixtureList(fixtures), [fixtures])
 
-  // Recent form (last FORM_GAMES FINISHED games) -- backward-looking,
-  // independent of the forward-looking GW window above.
-  const recentFormByTeam = useMemo(() => {
-    const finished = fixtures.filter((f) => f.finished && f.home_goals != null && f.away_goals != null)
-    const sorted = [...finished].sort((a, b) => a.kickoff_time.localeCompare(b.kickoff_time))
-    const byTeam: Record<string, { for: number; against: number }[]> = {}
-    for (const f of sorted) {
-      ;(byTeam[f.home_team] ??= []).push({ for: f.home_goals!, against: f.away_goals! })
-      ;(byTeam[f.away_team] ??= []).push({ for: f.away_goals!, against: f.home_goals! })
-    }
-    const out: Record<string, { gf: number; ga: number; games: number }> = {}
-    for (const [team, games] of Object.entries(byTeam)) {
-      const recent = games.slice(-FORM_GAMES)
-      out[team] = {
-        gf: recent.reduce((s, g) => s + g.for, 0) / recent.length,
-        ga: recent.reduce((s, g) => s + g.against, 0) / recent.length,
-        games: recent.length,
-      }
-    }
-    return out
-  }, [fixtures])
-
   const teamRows = useMemo(() => {
     const rows = Object.entries(teamFixtureList).map(([team, entries]) => {
       const inWindow = entries
@@ -113,25 +98,25 @@ export default function FixtureSwing() {
       // WITHIN this window (the first one chronologically) -- contextual to
       // whatever range is selected, same as everything else on this page.
       const nextCs = inWindow.find((e) => e.cleanSheetProb != null)?.cleanSheetProb ?? null
-      const form = recentFormByTeam[team]
+      const form = recentForm[team]
       return { team, entries: inWindow, avgFdr, nextCs, form }
     })
     return rows.sort((a, b) => {
       const va = sortField === 'avgFdr' ? a.avgFdr
         : sortField === 'nextCs' ? a.nextCs
-        : sortField === 'gf' ? (a.form?.gf ?? null)
-        : (a.form?.ga ?? null)
+        : sortField === 'gf' ? (a.form?.gf_per_game ?? null)
+        : (a.form?.ga_per_game ?? null)
       const vb = sortField === 'avgFdr' ? b.avgFdr
         : sortField === 'nextCs' ? b.nextCs
-        : sortField === 'gf' ? (b.form?.gf ?? null)
-        : (b.form?.ga ?? null)
+        : sortField === 'gf' ? (b.form?.gf_per_game ?? null)
+        : (b.form?.ga_per_game ?? null)
       // Teams with no data for the ACTIVE sort column sort last regardless
       // of direction -- there's nothing to rank them by on that axis.
       if (va == null) return 1
       if (vb == null) return -1
       return sortDir === 'asc' ? va - vb : vb - va
     })
-  }, [teamFixtureList, effectiveStart, effectiveEnd, sortField, sortDir, recentFormByTeam])
+  }, [teamFixtureList, effectiveStart, effectiveEnd, sortField, sortDir, recentForm])
 
   // Double/blank gameweeks -- only upcoming ones (gw >= currentGw), and only
   // gameweeks that actually HAVE a double or blank for at least one team
@@ -174,14 +159,14 @@ export default function FixtureSwing() {
           <input type="number" min={1} max={38} value={effectiveDraftStart}
             onChange={(e) => setDraftGwStart(Number(e.target.value))}
             onKeyDown={handleKeyDown}
-            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
+            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-slate-500">To GW</label>
           <input type="number" min={1} max={38} value={effectiveDraftEnd}
             onChange={(e) => setDraftGwEnd(Number(e.target.value))}
             onKeyDown={handleKeyDown}
-            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
+            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
         </div>
         <button onClick={applyGwRange} disabled={!hasPendingChange}
           className={`flex items-center gap-1 text-sm font-medium px-3 py-1 rounded-md border ${
@@ -226,10 +211,10 @@ export default function FixtureSwing() {
                 {row.nextCs != null ? `${(row.nextCs * 100).toFixed(0)}%` : '—'}
               </td>
               <td className="py-2 pr-3 text-right text-slate-500">
-                {row.form ? row.form.gf.toFixed(2) : '—'}
+                {row.form ? row.form.gf_per_game.toFixed(2) : '—'}
               </td>
               <td className="py-2 pr-3 text-right text-slate-500">
-                {row.form ? row.form.ga.toFixed(2) : '—'}
+                {row.form ? row.form.ga_per_game.toFixed(2) : '—'}
               </td>
             </tr>
           ))}

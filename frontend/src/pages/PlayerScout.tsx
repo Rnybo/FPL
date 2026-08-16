@@ -211,14 +211,14 @@ export default function PlayerScout() {
           <input type="number" min={1} max={38} value={draftGwStart}
             onChange={(e) => setDraftGwStart(Number(e.target.value))}
             onKeyDown={handleGwKeyDown}
-            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
+            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-slate-500">To GW</label>
           <input type="number" min={1} max={38} value={draftGwEnd}
             onChange={(e) => setDraftGwEnd(Number(e.target.value))}
             onKeyDown={handleGwKeyDown}
-            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16" />
+            className="border border-slate-300 rounded-md px-2 py-1 text-sm w-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
         </div>
         {/* Only lit up emerald once there's something to actually apply --
             otherwise a plain, unobtrusive button, so it doesn't look like a

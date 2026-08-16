@@ -184,6 +184,24 @@ export interface Fixture {
   away_clean_sheet_prob: number | null
 }
 
+export interface TeamRecentForm {
+  gf_per_game: number
+  ga_per_game: number
+  games: number
+}
+
+export interface FixturesResponse {
+  season: string
+  fixtures: Fixture[]
+  // Keyed by team name (current season) -- each team's last-5-REAL-games
+  // form, spanning a season boundary if the current season doesn't have 5
+  // finished games of its own yet (e.g. pre-season, before a ball's been
+  // kicked -- falls back to last season's closing games rather than
+  // showing nothing). See backend/app/routers/fixtures.py's
+  // _recent_form_by_team docstring.
+  recent_form: Record<string, TeamRecentForm>
+}
+
 export interface OptimalSquad {
   run_id: number
   gw_start: number | null

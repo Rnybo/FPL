@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { PlayersResponse, ModelRun, Fixture, OptimalSquad, CaptainPicksResponse, TeamOverview, LeagueResponse, SavedSquadSummary, SavedSquadDetail } from './types'
+import type { PlayersResponse, ModelRun, FixturesResponse, OptimalSquad, CaptainPicksResponse, TeamOverview, LeagueResponse, SavedSquadSummary, SavedSquadDetail } from './types'
 
 export function usePlayers(gwStart?: number, gwEnd?: number) {
   const params = new URLSearchParams()
@@ -30,7 +30,7 @@ export function useFixtures(gw?: number, gwStart?: number, gwEnd?: number) {
   const qs = params.toString()
   return useQuery({
     queryKey: ['fixtures', gw, gwStart, gwEnd],
-    queryFn: () => apiGet<{ season: string; fixtures: Fixture[] }>(`/api/fixtures${qs ? `?${qs}` : ''}`),
+    queryFn: () => apiGet<FixturesResponse>(`/api/fixtures${qs ? `?${qs}` : ''}`),
   })
 }
 

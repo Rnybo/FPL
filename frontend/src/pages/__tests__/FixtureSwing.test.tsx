@@ -54,6 +54,15 @@ const MOCK_FIXTURES = {
       home_team: 'Filler Rovers', away_team: 'Easy FC', home_difficulty: 3, away_difficulty: 2,
       home_goals: null, away_goals: null, home_clean_sheet_prob: null, away_clean_sheet_prob: null },
   ],
+  // Server-computed now (see fixtures.py's _recent_form_by_team) -- spans a
+  // season boundary in real life, but for these tests it's simplest to just
+  // supply the already-aggregated numbers directly, matching what the GW1
+  // results above would produce. Hard FC has none at all here (Blank FC
+  // deliberately has none either, matching its "blank" theme).
+  recent_form: {
+    'Easy FC': { gf_per_game: 3.0, ga_per_game: 0.0, games: 1 },
+    'Hard FC': { gf_per_game: 0.0, ga_per_game: 3.0, games: 1 },
+  },
 }
 
 describe('FixtureSwing', () => {
@@ -182,16 +191,15 @@ describe('FixtureSwing', () => {
     expect(within(hardRow).getByText('3.00')).toBeInTheDocument() // GA: lost 0-3 (conceded 3)
   })
 
-  it('a team with no finished games shows "—" for recent form, not a crash', () => {
+  it('a team with no recent_form entry shows "—" for GF/game and GA/game, not a crash', () => {
     vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
     renderWithClient(<FixtureSwing />)
 
-    const fillerUnitedRow = screen.getByText('Filler United').closest('tr')
-    // Filler United DID play in GW1 (vs Blank FC, 1-1) -- so it has form.
-    // Use a team that genuinely never appears in a finished fixture instead:
-    // none in this mock lack all history, so just confirm the dash pattern
-    // renders correctly for Blank FC's GF/GA (it has ONE finished game, 1-1).
-    expect(fillerUnitedRow).toBeTruthy()
+    // Blank FC has no entry in recent_form at all (see MOCK_FIXTURES).
+    const blankRow = screen.getByText('Blank FC').closest('tr')!
+    const cells = within(blankRow).getAllByRole('cell')
+    expect(cells[cells.length - 2]).toHaveTextContent('—') // GF/game
+    expect(cells[cells.length - 1]).toHaveTextContent('—') // GA/game
   })
 
   it('lists upcoming double and blank gameweeks', () => {

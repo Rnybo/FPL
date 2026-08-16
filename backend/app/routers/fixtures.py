@@ -1,14 +1,17 @@
 """GET /api/fixtures -- upcoming fixture difficulty for the current season,
 from our own cache (already loaded by fetch_upcoming_fixtures.py). Also
 attaches each side's clean-sheet probability from the current prediction
-run where available -- backs Fixture Swing's "how likely is each team to
-keep a clean sheet in their next match" ranking.
+run where available (backs Fixture Swing's clean-sheet ranking), and a
+top-level `recent_form` map of each current team's last 5 REAL results
+(backs Fixture Swing's GF/game, GA/game columns).
 """
 from fastapi import APIRouter, Query
 from app.config import CURRENT_SEASON
 from app.services.db import query_df
 
 router = APIRouter(prefix="/api/fixtures", tags=["fixtures"])
+
+RECENT_FORM_GAMES = 5
 
 
 def _clean_sheet_prob_by_fixture_team() -> dict[tuple[int, int], float]:
@@ -39,6 +42,62 @@ def _clean_sheet_prob_by_fixture_team() -> dict[tuple[int, int], float]:
         return {}
     grouped = df.groupby(["fixture_id", "team_id"])["p_clean_sheet"].first()
     return {(int(fid), int(tid)): round(float(v), 3) for (fid, tid), v in grouped.items()}
+
+
+def _recent_form_by_team(n: int = RECENT_FORM_GAMES) -> dict[str, dict]:
+    """Last n REAL finished results per CURRENT team, spanning season
+    boundaries if the current season doesn't have n finished games of its
+    own yet -- e.g. right now, pre-season, CURRENT_SEASON has ZERO finished
+    fixtures at all, so restricting this to CURRENT_SEASON only would leave
+    every team with no recent-form data whatsoever. Pulling from the whole
+    `fixtures` table (every season) and just taking the actual last n by
+    kickoff_time naturally falls back to last season's closing games
+    instead -- a team's "recent form" is a real, continuous thing that
+    doesn't reset to a blank slate the moment a new season is created in
+    the database, even before a ball's been kicked in it.
+
+    Keyed by the team's CURRENT-season name -- team_id is the stable
+    identity used for the actual lookup (same convention as players.py's
+    _opponent_stats), but the frontend matches teams by name, same as
+    buildFdrByTeam/buildTeamFixtureList on the frontend.
+    """
+    current_teams = query_df(
+        "SELECT team_id, name FROM teams WHERE season_id = ?", (CURRENT_SEASON,)
+    )
+    if current_teams.empty:
+        return {}
+
+    all_finished = query_df(
+        """SELECT home_team_id, away_team_id, home_goals, away_goals, kickoff_time
+           FROM fixtures
+           WHERE finished = 1 AND home_goals IS NOT NULL AND away_goals IS NOT NULL"""
+    )
+    if all_finished.empty:
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in current_teams.itertuples():
+        team_id, name = row.team_id, row.name
+        team_games = all_finished[
+            (all_finished["home_team_id"] == team_id) | (all_finished["away_team_id"] == team_id)
+        ].sort_values("kickoff_time")
+        recent = team_games.tail(n)
+        if recent.empty:
+            continue
+        gf, ga = [], []
+        for r in recent.itertuples():
+            if r.home_team_id == team_id:
+                gf.append(r.home_goals)
+                ga.append(r.away_goals)
+            else:
+                gf.append(r.away_goals)
+                ga.append(r.home_goals)
+        out[name] = {
+            "gf_per_game": round(sum(gf) / len(gf), 2),
+            "ga_per_game": round(sum(ga) / len(ga), 2),
+            "games": len(gf),
+        }
+    return out
 
 
 @router.get("")
@@ -77,4 +136,5 @@ def list_fixtures(
         row["home_clean_sheet_prob"] = cs_prob.get((row["fixture_id"], home_team_id))
         row["away_clean_sheet_prob"] = cs_prob.get((row["fixture_id"], away_team_id))
         fixtures.append(row)
-    return {"season": CURRENT_SEASON, "fixtures": fixtures}
+
+    return {"season": CURRENT_SEASON, "fixtures": fixtures, "recent_form": _recent_form_by_team()}
