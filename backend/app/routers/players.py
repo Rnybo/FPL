@@ -561,24 +561,36 @@ def _points_vs_opponent_last_season(gw_start: int | None, gw_end: int | None) ->
         teams_df = query_df("SELECT team_id, season_id, name FROM teams")
         team_name_by_id = teams_df.sort_values("season_id").groupby("team_id")["name"].last().to_dict()
 
+        # Pre-aggregate last season's points by (player_id, opponent_team_id,
+        # was_home) ONCE via a single vectorized groupby, rather than
+        # re-filtering the WHOLE last-season history dataframe inside a
+        # per-player Python loop. The old approach was O(players x history
+        # rows) -- up to ~587 x 28,000 row-comparisons for a single request
+        # -- which is genuinely slow on constrained hardware (this was the
+        # actual cause of a brand-new gw window sometimes taking a very
+        # long time, not just general slowness). This is O(history rows)
+        # once, then O(1) dict lookups per player/opponent pair below.
+        home_pts_by_key: dict[tuple, int] = {}
+        away_pts_by_key: dict[tuple, int] = {}
+        if not last_season_hist.empty:
+            grouped = last_season_hist.groupby(["player_id", "opponent_team_id", "was_home"])["total_points"].sum()
+            for (pid_key, opp_id, was_home), total in grouped.items():
+                if was_home == 1:
+                    home_pts_by_key[(pid_key, opp_id)] = int(total)
+                else:
+                    away_pts_by_key[(pid_key, opp_id)] = int(total)
+
         out: dict[int, list[dict]] = {}
         for pid, g in current.groupby("player_id"):
-            player_hist = last_season_hist[last_season_hist["player_id"] == pid] if not last_season_hist.empty else last_season_hist
             rows = []
             for r in g.sort_values("gw").itertuples():
                 opp_id = r.opponent_team_id
-                if not player_hist.empty:
-                    vs_opp = player_hist[player_hist["opponent_team_id"] == opp_id]
-                    home_pts = vs_opp.loc[vs_opp["was_home"] == 1, "total_points"]
-                    away_pts = vs_opp.loc[vs_opp["was_home"] == 0, "total_points"]
-                else:
-                    home_pts = away_pts = pd.Series(dtype=float)
                 rows.append({
                     "gw": int(r.gw),
                     "opponent": team_name_by_id.get(opp_id, f"Team {opp_id}"),
                     "venue_now": "H" if r.is_home else "A",
-                    "home_points_last_season": int(home_pts.sum()) if not home_pts.empty else None,
-                    "away_points_last_season": int(away_pts.sum()) if not away_pts.empty else None,
+                    "home_points_last_season": home_pts_by_key.get((pid, opp_id)),
+                    "away_points_last_season": away_pts_by_key.get((pid, opp_id)),
                 })
             if rows:
                 out[int(pid)] = rows
