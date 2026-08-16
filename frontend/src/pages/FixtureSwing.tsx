@@ -8,12 +8,22 @@ import FdrStrip, { buildTeamFixtureList } from '../components/FdrStrip'
 // default view" for visual consistency.
 const DEFAULT_WINDOW = 8
 
+// How many of a team's most recent FINISHED games "recent form" looks back
+// across -- independent of the GW window above (that's forward-looking;
+// this is deliberately backward-looking, so it stays fixed regardless of
+// which upcoming range is selected).
+const FORM_GAMES = 5
+
+type SortField = 'avgFdr' | 'nextCs' | 'gf' | 'ga'
+
 // "Which teams have the best run of fixtures coming up" -- a standalone,
 // team-centric view, distinct from Player Scout's per-player FDR column.
 // Fetches the WHOLE season's fixtures once (no gw filter) and does all the
-// windowing/sorting client-side -- no backend changes needed, this reuses
-// the exact same /api/fixtures data Player Scout already has, just grouped
-// and ranked by TEAM instead of shown alongside individual players.
+// windowing/sorting client-side -- no backend changes needed for the FDR
+// ranking or recent-form columns, this reuses the exact same /api/fixtures
+// data Player Scout already has, just grouped and ranked by TEAM instead of
+// shown alongside individual players. Clean-sheet % DOES rely on a backend
+// addition (see fixtures.py's home/away_clean_sheet_prob).
 export default function FixtureSwing() {
   const { data, isLoading, isError, error } = useFixtures()
   const fixtures = useMemo(() => data?.fixtures ?? [], [data])
@@ -49,9 +59,47 @@ export default function FixtureSwing() {
     if (e.key === 'Enter') applyGwRange()
   }
 
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc') // easiest run first by default
+  const [sortField, setSortField] = useState<SortField>('avgFdr')
+  // FDR: lower is better, so ascending ("easiest first") is the natural
+  // default. Everything else here (clean sheet %, goals for) is "higher is
+  // better", and goals against is "lower is better" -- each column's OWN
+  // first click below picks whichever direction actually means "best team
+  // first" for that specific stat, same reasoning as Player Scout's FDR
+  // column defaulting to ascending while everything else defaults to desc.
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  function sortByColumn(field: SortField) {
+    if (field === sortField) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir(field === 'avgFdr' || field === 'ga' ? 'asc' : 'desc')
+    }
+  }
 
   const teamFixtureList = useMemo(() => buildTeamFixtureList(fixtures), [fixtures])
+
+  // Recent form (last FORM_GAMES FINISHED games) -- backward-looking,
+  // independent of the forward-looking GW window above.
+  const recentFormByTeam = useMemo(() => {
+    const finished = fixtures.filter((f) => f.finished && f.home_goals != null && f.away_goals != null)
+    const sorted = [...finished].sort((a, b) => a.kickoff_time.localeCompare(b.kickoff_time))
+    const byTeam: Record<string, { for: number; against: number }[]> = {}
+    for (const f of sorted) {
+      ;(byTeam[f.home_team] ??= []).push({ for: f.home_goals!, against: f.away_goals! })
+      ;(byTeam[f.away_team] ??= []).push({ for: f.away_goals!, against: f.home_goals! })
+    }
+    const out: Record<string, { gf: number; ga: number; games: number }> = {}
+    for (const [team, games] of Object.entries(byTeam)) {
+      const recent = games.slice(-FORM_GAMES)
+      out[team] = {
+        gf: recent.reduce((s, g) => s + g.for, 0) / recent.length,
+        ga: recent.reduce((s, g) => s + g.against, 0) / recent.length,
+        games: recent.length,
+      }
+    }
+    return out
+  }, [fixtures])
 
   const teamRows = useMemo(() => {
     const rows = Object.entries(teamFixtureList).map(([team, entries]) => {
@@ -61,27 +109,63 @@ export default function FixtureSwing() {
       const avgFdr = inWindow.length > 0
         ? inWindow.reduce((s, e) => s + e.difficulty, 0) / inWindow.length
         : null
-      return { team, entries: inWindow, avgFdr }
+      // "Next CS%" = the clean-sheet chance for the team's NEXT fixture
+      // WITHIN this window (the first one chronologically) -- contextual to
+      // whatever range is selected, same as everything else on this page.
+      const nextCs = inWindow.find((e) => e.cleanSheetProb != null)?.cleanSheetProb ?? null
+      const form = recentFormByTeam[team]
+      return { team, entries: inWindow, avgFdr, nextCs, form }
     })
     return rows.sort((a, b) => {
-      // Teams with no fixtures in the window (a full blank) sort last
-      // regardless of direction -- there's nothing to rank them by.
-      if (a.avgFdr == null) return 1
-      if (b.avgFdr == null) return -1
-      return sortDir === 'asc' ? a.avgFdr - b.avgFdr : b.avgFdr - a.avgFdr
+      const va = sortField === 'avgFdr' ? a.avgFdr
+        : sortField === 'nextCs' ? a.nextCs
+        : sortField === 'gf' ? (a.form?.gf ?? null)
+        : (a.form?.ga ?? null)
+      const vb = sortField === 'avgFdr' ? b.avgFdr
+        : sortField === 'nextCs' ? b.nextCs
+        : sortField === 'gf' ? (b.form?.gf ?? null)
+        : (b.form?.ga ?? null)
+      // Teams with no data for the ACTIVE sort column sort last regardless
+      // of direction -- there's nothing to rank them by on that axis.
+      if (va == null) return 1
+      if (vb == null) return -1
+      return sortDir === 'asc' ? va - vb : vb - va
     })
-  }, [teamFixtureList, effectiveStart, effectiveEnd, sortDir])
+  }, [teamFixtureList, effectiveStart, effectiveEnd, sortField, sortDir, recentFormByTeam])
+
+  // Double/blank gameweeks -- only upcoming ones (gw >= currentGw), and only
+  // gameweeks that actually HAVE a double or blank for at least one team
+  // (most gameweeks are entirely normal -- no point listing those).
+  const dgwBgw = useMemo(() => {
+    const allTeams = Object.keys(teamFixtureList)
+    const upcomingGws = [...new Set(fixtures.filter((f) => f.gw >= currentGw).map((f) => f.gw))].sort((a, b) => a - b)
+    const result: { gw: number; doubles: string[]; blanks: string[] }[] = []
+    for (const gw of upcomingGws) {
+      const countByTeam: Record<string, number> = {}
+      for (const t of allTeams) countByTeam[t] = 0
+      for (const f of fixtures) {
+        if (f.gw !== gw) continue
+        countByTeam[f.home_team] = (countByTeam[f.home_team] ?? 0) + 1
+        countByTeam[f.away_team] = (countByTeam[f.away_team] ?? 0) + 1
+      }
+      const doubles = allTeams.filter((t) => countByTeam[t] >= 2)
+      const blanks = allTeams.filter((t) => countByTeam[t] === 0)
+      if (doubles.length > 0 || blanks.length > 0) result.push({ gw, doubles, blanks })
+    }
+    return result
+  }, [fixtures, currentGw, teamFixtureList])
 
   if (isLoading) return <div className="p-6 text-slate-500">Loading fixtures...</div>
   if (isError) return <div className="p-6 text-red-600">Failed to load: {(error as Error).message}</div>
 
   return (
-    <div className="p-3 sm:p-6 max-w-4xl mx-auto">
+    <div className="p-3 sm:p-6 max-w-5xl mx-auto">
       <h1 className="text-2xl font-bold text-slate-900 mb-1">Fixture Swing</h1>
       <p className="text-slate-500 text-sm mb-4">
         Which teams have the best run of fixtures coming up -- pick players from the top of this list,
-        avoid the bottom. Ranked by average FDR over GW{effectiveStart}
-        {effectiveEnd !== effectiveStart ? `-${effectiveEnd}` : ''}.
+        avoid the bottom. Ranked over GW{effectiveStart}
+        {effectiveEnd !== effectiveStart ? `-${effectiveEnd}` : ''}. "Form" columns are backward-looking
+        (last {FORM_GAMES} finished games), independent of this range.
       </p>
 
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -109,21 +193,16 @@ export default function FixtureSwing() {
         </button>
       </div>
 
-      <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+      <div className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
+      <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden min-w-[720px]">
         <thead>
           <tr className="bg-slate-100 text-left text-slate-500">
             <th className="py-2 pr-3 pl-3">Team</th>
             <th className="py-2 pr-3">Fixtures</th>
-            <th className="py-2 pr-4 text-right">
-              <button onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-                className="flex items-center gap-1 ml-auto font-medium text-slate-900 hover:text-slate-900">
-                Avg FDR
-                <span className="text-[10px]">
-                  {sortDir === 'asc' ? '↑' : '↓'}
-                </span>
-                <ChevronsUpDown size={11} className="text-slate-300" />
-              </button>
-            </th>
+            <SortHeader field="avgFdr" label="Avg FDR" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} />
+            <SortHeader field="nextCs" label="Next CS%" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
+            <SortHeader field="gf" label="GF/game" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
+            <SortHeader field="ga" label="GA/game" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
           </tr>
         </thead>
         <tbody>
@@ -140,14 +219,77 @@ export default function FixtureSwing() {
                   <span className="text-xs text-slate-300">No fixtures in this range</span>
                 )}
               </td>
-              <td className="py-2 pr-4 text-right font-semibold text-slate-700">
+              <td className="py-2 pr-3 text-right font-semibold text-slate-700">
                 {row.avgFdr != null ? row.avgFdr.toFixed(2) : '—'}
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-500">
+                {row.nextCs != null ? `${(row.nextCs * 100).toFixed(0)}%` : '—'}
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-500">
+                {row.form ? row.form.gf.toFixed(2) : '—'}
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-500">
+                {row.form ? row.form.ga.toFixed(2) : '—'}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       {teamRows.length === 0 && <p className="text-slate-400 text-sm py-6 text-center">No fixture data yet.</p>}
+
+      {dgwBgw.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold text-slate-700 mb-1">Double &amp; Blank Gameweeks</h2>
+          <p className="text-xs text-slate-400 mb-2">
+            Upcoming gameweeks where at least one team plays twice (double) or not at all (blank) --
+            worth timing a wildcard/free hit around.
+          </p>
+          <div className="space-y-1.5">
+            {dgwBgw.map(({ gw, doubles, blanks }) => (
+              <div key={gw} className="text-sm border border-slate-200 rounded-lg px-3 py-2">
+                <span className="font-semibold text-slate-900">GW{gw}</span>
+                {doubles.length > 0 && (
+                  <span className="ml-3 text-emerald-700">
+                    Double: {doubles.join(', ')}
+                  </span>
+                )}
+                {blanks.length > 0 && (
+                  <span className="ml-3 text-red-600">
+                    Blank: {blanks.join(', ')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function SortHeader({ field, label, sortField, sortDir, onClick, muted }: {
+  field: SortField
+  label: string
+  sortField: SortField
+  sortDir: 'asc' | 'desc'
+  onClick: (field: SortField) => void
+  muted?: boolean
+}) {
+  const isActive = field === sortField
+  return (
+    <th className="py-2 pr-3 text-right">
+      <button onClick={() => onClick(field)}
+        className={`flex items-center gap-1 ml-auto font-medium ${
+          isActive ? 'text-slate-900' : muted ? 'text-slate-400 hover:text-slate-900' : 'text-slate-500 hover:text-slate-900'
+        }`}>
+        {label}
+        {isActive ? (
+          <span className="text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>
+        ) : (
+          <ChevronsUpDown size={11} className="text-slate-300" />
+        )}
+      </button>
+    </th>
   )
 }

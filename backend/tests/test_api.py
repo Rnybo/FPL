@@ -470,6 +470,52 @@ def test_fixtures_gw_range_returns_multiple_gameweeks():
     assert gws == {1, 2, 3}
 
 
+def test_fixtures_clean_sheet_probs_are_present_and_well_formed():
+    """home/away_clean_sheet_prob back Fixture Swing's clean-sheet ranking --
+    real probabilities (0-1) where the current prediction run covers that
+    fixture, None where it doesn't (a fixture beyond the run's horizon, or
+    long finished) -- never a stray placeholder value."""
+    resp = client.get("/api/fixtures")
+    fixtures = resp.json()["fixtures"]
+    checked_any = False
+    for f in fixtures:
+        for key in ("home_clean_sheet_prob", "away_clean_sheet_prob"):
+            if f[key] is not None:
+                checked_any = True
+                assert 0 <= f[key] <= 1
+    assert checked_any, "no fixture in the sample had a clean sheet prob -- test wasn't exercised"
+
+
+def test_fixtures_clean_sheet_prob_matches_captain_sim_inputs_directly():
+    """Cross-check against the raw source table directly, not just
+    structural plausibility -- a team's clean_sheet_prob on a fixture must
+    equal what's actually stored in captain_sim_inputs for any one of that
+    team's players on that fixture (they're all identical -- see
+    fixtures.py's _clean_sheet_prob_by_fixture_team docstring)."""
+    import sqlite3
+    from app.config import DB_PATH, CURRENT_SEASON
+
+    resp = client.get("/api/fixtures")
+    fixtures = [f for f in resp.json()["fixtures"] if f["home_clean_sheet_prob"] is not None]
+    assert fixtures, "no fixture in the sample had a clean sheet prob -- test wasn't exercised"
+    target = fixtures[0]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """SELECT csi.p_clean_sheet
+           FROM captain_sim_inputs csi
+           JOIN player_season ps ON ps.player_id = csi.player_id AND ps.season_id = ?
+           JOIN fixtures f ON f.fixture_id = csi.fixture_id
+           WHERE csi.fixture_id = ? AND ps.team_id = f.home_team_id
+           LIMIT 1""",
+        (CURRENT_SEASON, target["fixture_id"]),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert target["home_clean_sheet_prob"] == pytest.approx(row["p_clean_sheet"], abs=0.001)
+
+
 def test_squad_optimal_respects_budget_and_positions():
     resp = client.get("/api/squad/optimal")
     assert resp.status_code == 200

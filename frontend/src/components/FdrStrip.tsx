@@ -26,18 +26,28 @@ export interface TeamFixtureEntry {
   opponent: string
   isHome: boolean
   difficulty: number
+  cleanSheetProb: number | null
 }
 
 /** Same per-team chronological ordering as buildFdrByTeam, but keeps the
- * opponent/venue/gw alongside each difficulty -- backs the Fixture Swing
- * page's richer per-cell tooltips ("GW5: vs Chelsea (A)"), which a bare
- * difficulty number can't convey on its own. */
+ * opponent/venue/gw/clean-sheet-chance alongside each difficulty -- backs
+ * the Fixture Swing page's richer per-cell tooltips ("GW5: vs Chelsea (A)")
+ * and its clean-sheet ranking, neither of which a bare difficulty number
+ * can convey on its own. cleanSheetProb is the TEAM'S OWN side of that
+ * fixture (home_clean_sheet_prob when they're home, away_ when away) --
+ * null wherever the prediction run doesn't cover that fixture yet. */
 export function buildTeamFixtureList(fixtures: Fixture[]): Record<string, TeamFixtureEntry[]> {
   const byTeam: Record<string, TeamFixtureEntry[]> = {}
   const sorted = [...fixtures].sort((a, b) => a.kickoff_time.localeCompare(b.kickoff_time))
   for (const f of sorted) {
-    ;(byTeam[f.home_team] ??= []).push({ gw: f.gw, opponent: f.away_team, isHome: true, difficulty: f.home_difficulty })
-    ;(byTeam[f.away_team] ??= []).push({ gw: f.gw, opponent: f.home_team, isHome: false, difficulty: f.away_difficulty })
+    ;(byTeam[f.home_team] ??= []).push({
+      gw: f.gw, opponent: f.away_team, isHome: true, difficulty: f.home_difficulty,
+      cleanSheetProb: f.home_clean_sheet_prob,
+    })
+    ;(byTeam[f.away_team] ??= []).push({
+      gw: f.gw, opponent: f.home_team, isHome: false, difficulty: f.away_difficulty,
+      cleanSheetProb: f.away_clean_sheet_prob,
+    })
   }
   return byTeam
 }

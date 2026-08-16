@@ -177,6 +177,11 @@ export interface Fixture {
   away_difficulty: number
   home_goals: number | null
   away_goals: number | null
+  // Each side's clean-sheet chance from the current prediction run --
+  // null where the fixture is beyond that run's horizon (or long finished).
+  // Backs Fixture Swing's clean-sheet ranking.
+  home_clean_sheet_prob: number | null
+  away_clean_sheet_prob: number | null
 }
 
 export interface OptimalSquad {
