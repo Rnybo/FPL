@@ -518,9 +518,10 @@ def test_fixtures_clean_sheet_prob_matches_captain_sim_inputs_directly():
 
 def test_fixtures_recent_form_is_present_and_well_formed():
     """Every current team with any real finished-match history at all should
-    have a recent_form entry -- gf_per_game/ga_per_game are real per-game
-    averages (small, non-negative-ish floats, not raw totals), and games is
-    at most RECENT_FORM_GAMES."""
+    have a recent_form entry -- home/away gf_per_game/ga_per_game are real
+    per-game averages (small, non-negative-ish floats, not raw totals),
+    tracked SEPARATELY (not blended) since a team's home and away form can
+    genuinely differ, and each *_games count is at most RECENT_FORM_GAMES."""
     from app.routers.fixtures import RECENT_FORM_GAMES
 
     resp = client.get("/api/fixtures")
@@ -528,11 +529,26 @@ def test_fixtures_recent_form_is_present_and_well_formed():
     assert "recent_form" in data
     form = data["recent_form"]
     assert len(form) > 0
+    checked_home = checked_away = False
     for team, f in form.items():
         assert team  # non-empty
-        assert 1 <= f["games"] <= RECENT_FORM_GAMES
-        assert 0 <= f["gf_per_game"] <= 10  # sane per-game bounds
-        assert 0 <= f["ga_per_game"] <= 10
+        assert 0 <= f["home_games"] <= RECENT_FORM_GAMES
+        assert 0 <= f["away_games"] <= RECENT_FORM_GAMES
+        if f["home_games"] > 0:
+            checked_home = True
+            assert 0 <= f["home_gf_per_game"] <= 10
+            assert 0 <= f["home_ga_per_game"] <= 10
+        else:
+            assert f["home_gf_per_game"] is None
+            assert f["home_ga_per_game"] is None
+        if f["away_games"] > 0:
+            checked_away = True
+            assert 0 <= f["away_gf_per_game"] <= 10
+            assert 0 <= f["away_ga_per_game"] <= 10
+        else:
+            assert f["away_gf_per_game"] is None
+            assert f["away_ga_per_game"] is None
+    assert checked_home and checked_away, "sample didn't include both home and away form -- test wasn't fully exercised"
 
 
 def test_fixtures_recent_form_falls_back_across_season_boundary_when_current_season_has_no_finished_games():
@@ -549,40 +565,131 @@ def test_fixtures_recent_form_falls_back_across_season_boundary_when_current_sea
 
 
 def test_fixtures_recent_form_matches_a_manual_recomputation():
-    """Recompute one real team's recent form directly from the fixtures
-    table (any season, not just current) and confirm it matches exactly --
-    not just structurally plausible."""
+    """Recompute one real team's HOME recent form directly from the
+    fixtures table (any season, not just current, joined by NAME -- team_id
+    is NOT a stable cross-season identifier in this cache, see fixtures.py's
+    module docstring) and confirm it matches exactly -- not just
+    structurally plausible."""
     import sqlite3
-    from app.config import DB_PATH, CURRENT_SEASON
+    from app.config import DB_PATH
     from app.routers.fixtures import RECENT_FORM_GAMES
 
     resp = client.get("/api/fixtures")
     form = resp.json()["recent_form"]
-    assert form, "no team had recent_form -- test wasn't exercised"
-    team_name = next(iter(form))
+    team_name = next(name for name, f in form.items() if f["home_games"] > 0)
     expected = form[team_name]
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    team_id = conn.execute(
-        "SELECT team_id FROM teams WHERE season_id = ? AND name = ?", (CURRENT_SEASON, team_name)
-    ).fetchone()["team_id"]
     rows = conn.execute(
-        """SELECT home_team_id, away_team_id, home_goals, away_goals, kickoff_time
-           FROM fixtures
-           WHERE finished = 1 AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-                 AND (home_team_id = ? OR away_team_id = ?)
-           ORDER BY kickoff_time""",
-        (team_id, team_id),
+        """SELECT f.home_goals, f.away_goals, f.kickoff_time
+           FROM fixtures f
+           JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+           WHERE f.finished = 1 AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL
+                 AND th.name = ?
+           ORDER BY f.kickoff_time""",
+        (team_name,),
     ).fetchall()
     conn.close()
 
     recent = rows[-RECENT_FORM_GAMES:]
-    gf = [r["home_goals"] if r["home_team_id"] == team_id else r["away_goals"] for r in recent]
-    ga = [r["away_goals"] if r["home_team_id"] == team_id else r["home_goals"] for r in recent]
-    assert expected["games"] == len(recent)
-    assert expected["gf_per_game"] == pytest.approx(sum(gf) / len(gf), abs=0.01)
-    assert expected["ga_per_game"] == pytest.approx(sum(ga) / len(ga), abs=0.01)
+    assert expected["home_games"] == len(recent)
+    assert expected["home_gf_per_game"] == pytest.approx(sum(r["home_goals"] for r in recent) / len(recent), abs=0.01)
+    assert expected["home_ga_per_game"] == pytest.approx(sum(r["away_goals"] for r in recent) / len(recent), abs=0.01)
+
+
+def test_fixtures_last_season_team_stats_shape_and_internal_consistency():
+    """goals/clean-sheets are non-negative integers consistent with
+    games_home/games_away, favorable/unfavorable opponents are each up to
+    FAVORABLE_OPPONENTS_TOP_N entries ranked correctly (favorable descending
+    by avg_goal_diff, unfavorable ascending -- worst first), and the
+    favorable list's best entry must never be worse than the unfavorable
+    list's worst entry."""
+    from app.routers.fixtures import FAVORABLE_OPPONENTS_TOP_N
+
+    resp = client.get("/api/fixtures")
+    data = resp.json()
+    assert "last_season_team_stats" in data
+    stats = data["last_season_team_stats"]
+    assert len(stats) > 0
+
+    for team, s in stats.items():
+        assert team
+        assert s["games_home"] >= 0 and s["games_away"] >= 0
+        assert s["goals_for_home"] >= 0 and s["goals_for_away"] >= 0
+        assert s["goals_against_home"] >= 0 and s["goals_against_away"] >= 0
+        assert 0 <= s["clean_sheets_home"] <= s["games_home"]
+        assert 0 <= s["clean_sheets_away"] <= s["games_away"]
+        assert s["clean_sheets_total"] == s["clean_sheets_home"] + s["clean_sheets_away"]
+
+        assert 0 < len(s["favorable_opponents"]) <= FAVORABLE_OPPONENTS_TOP_N
+        assert 0 < len(s["unfavorable_opponents"]) <= FAVORABLE_OPPONENTS_TOP_N
+        for entry in s["favorable_opponents"] + s["unfavorable_opponents"]:
+            assert entry["opponent"]
+            assert entry["games"] >= 1
+            assert entry["next_gw"] is None or entry["next_gw"] >= 1
+
+        fav_diffs = [e["avg_goal_diff"] for e in s["favorable_opponents"]]
+        assert fav_diffs == sorted(fav_diffs, reverse=True)
+        unfav_diffs = [e["avg_goal_diff"] for e in s["unfavorable_opponents"]]
+        assert unfav_diffs == sorted(unfav_diffs)
+        assert fav_diffs[0] >= unfav_diffs[0]
+
+
+def test_fixtures_last_season_team_stats_matches_a_manual_recomputation():
+    """Recompute one real team's last-season home goals for/against and
+    clean sheets directly from the fixtures table (joined by NAME -- see
+    fixtures.py's module docstring on why team_id isn't safe across
+    seasons) and confirm they match exactly -- not just structurally
+    plausible."""
+    import sqlite3
+    from app.config import DB_PATH
+    from app.routers.fixtures import LAST_COMPLETE_SEASON
+
+    resp = client.get("/api/fixtures")
+    stats = resp.json()["last_season_team_stats"]
+    assert stats, "no team had last_season_team_stats -- test wasn't exercised"
+    team_name = next(iter(stats))
+    expected = stats[team_name]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    home_rows = conn.execute(
+        """SELECT f.home_goals, f.away_goals FROM fixtures f
+           JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+           WHERE f.season_id = ? AND f.finished = 1 AND th.name = ?
+                 AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
+        (LAST_COMPLETE_SEASON, team_name),
+    ).fetchall()
+    conn.close()
+
+    assert expected["games_home"] == len(home_rows)
+    assert expected["goals_for_home"] == sum(r["home_goals"] for r in home_rows)
+    assert expected["goals_against_home"] == sum(r["away_goals"] for r in home_rows)
+    assert expected["clean_sheets_home"] == sum(1 for r in home_rows if r["away_goals"] == 0)
+
+
+def test_fixtures_last_season_team_stats_favorable_opponent_matches_a_real_upcoming_fixture():
+    """Where next_gw is set on a favorable/unfavorable opponent entry, it
+    must correspond to a REAL scheduled fixture this season between the two
+    teams -- not just any future gameweek."""
+    resp = client.get("/api/fixtures")
+    data = resp.json()
+    fixtures = data["fixtures"]
+    checked_any = False
+    for team, s in data["last_season_team_stats"].items():
+        for entry in s["favorable_opponents"] + s["unfavorable_opponents"]:
+            if entry["next_gw"] is None:
+                continue
+            checked_any = True
+            matches = [
+                f for f in fixtures
+                if f["gw"] == entry["next_gw"]
+                and team in (f["home_team"], f["away_team"])
+                and entry["opponent"] in (f["home_team"], f["away_team"])
+            ]
+            assert matches, f"{team}: no real fixture vs {entry['opponent']} in GW{entry['next_gw']}"
+    assert checked_any, "no favorable/unfavorable opponent entry had a next_gw set -- test wasn't exercised"
 
 
 def test_squad_optimal_respects_budget_and_positions():

@@ -1,17 +1,45 @@
 """GET /api/fixtures -- upcoming fixture difficulty for the current season,
 from our own cache (already loaded by fetch_upcoming_fixtures.py). Also
-attaches each side's clean-sheet probability from the current prediction
-run where available (backs Fixture Swing's clean-sheet ranking), and a
-top-level `recent_form` map of each current team's last 5 REAL results
-(backs Fixture Swing's GF/game, GA/game columns).
+attaches:
+  - each side's clean-sheet probability from the current prediction run
+    (backs Team Scout's clean-sheet ranking)
+  - `recent_form`: each current team's HOME and AWAY goal record separately
+    (see _recent_form_by_team) -- backs Team Scout's "Home"/"Away" form split
+  - `last_season_team_stats`: each current team's full LAST_COMPLETE_SEASON
+    record -- goals/conceded by venue, clean sheets, favorable/unfavorable
+    opponents (see _team_last_season_stats)
+
+IMPORTANT data quirk driving a design choice below: FPL's numeric team `id`
+is NOT a stable per-club identifier across seasons -- it's reassigned each
+season based on that season's 20 clubs (roughly alphabetical slot 1-20), so
+the SAME id can be a completely different real club from one season to the
+next (verified in this cache: id=11 has been Liverpool, Leeds, Liverpool,
+Leicester, and Leeds again across five recent seasons). Anything joining
+fixtures ACROSS seasons in this file therefore matches by team NAME, not
+team_id -- names are what's actually stable for the same real club. Only
+WITHIN a single season (e.g. CURRENT_SEASON's own upcoming-fixture lookups)
+is team_id safe to use directly.
 """
 from fastapi import APIRouter, Query
+import pandas as pd
 from app.config import CURRENT_SEASON
 from app.services.db import query_df
 
 router = APIRouter(prefix="/api/fixtures", tags=["fixtures"])
 
 RECENT_FORM_GAMES = 5
+
+# Most recent COMPLETE season -- matches players.py's constant of the same
+# name/value (duplicated rather than imported, same low-risk pattern already
+# established between players.py and captain_simulation.py/combine_xp.py).
+LAST_COMPLETE_SEASON = "2025-26"
+
+# How many favorable/unfavorable opponents to surface -- a normal season
+# means each team faces ~19 different opponents (home+away), so "top 5"
+# here means "best/worst 5 of those ~19," from a SINGLE season's games only
+# (not the multi-season lookback players.py's own _opponent_stats uses --
+# "last year's stats" was asked for literally here).
+FAVORABLE_OPPONENTS_TOP_N = 5
 
 
 def _clean_sheet_prob_by_fixture_team() -> dict[tuple[int, int], float]:
@@ -23,7 +51,8 @@ def _clean_sheet_prob_by_fixture_team() -> dict[tuple[int, int], float]:
     team's own probability; .first() just picks one, all identical.
     Only covers fixtures within the current prediction run's horizon --
     fixtures beyond that, or already finished, simply won't have an entry
-    here, handled as None by the caller.
+    here, handled as None by the caller. team_id here is safe -- this is
+    entirely WITHIN CURRENT_SEASON, no cross-season comparison.
     """
     latest_run = query_df(
         "SELECT run_id FROM model_runs WHERE model_type='predict_upcoming' ORDER BY run_id DESC LIMIT 1"
@@ -44,58 +73,168 @@ def _clean_sheet_prob_by_fixture_team() -> dict[tuple[int, int], float]:
     return {(int(fid), int(tid)): round(float(v), 3) for (fid, tid), v in grouped.items()}
 
 
-def _recent_form_by_team(n: int = RECENT_FORM_GAMES) -> dict[str, dict]:
-    """Last n REAL finished results per CURRENT team, spanning season
-    boundaries if the current season doesn't have n finished games of its
-    own yet -- e.g. right now, pre-season, CURRENT_SEASON has ZERO finished
-    fixtures at all, so restricting this to CURRENT_SEASON only would leave
-    every team with no recent-form data whatsoever. Pulling from the whole
-    `fixtures` table (every season) and just taking the actual last n by
-    kickoff_time naturally falls back to last season's closing games
-    instead -- a team's "recent form" is a real, continuous thing that
-    doesn't reset to a blank slate the moment a new season is created in
-    the database, even before a ball's been kicked in it.
+def _current_teams() -> pd.DataFrame:
+    return query_df("SELECT team_id, name FROM teams WHERE season_id = ?", (CURRENT_SEASON,))
 
-    Keyed by the team's CURRENT-season name -- team_id is the stable
-    identity used for the actual lookup (same convention as players.py's
-    _opponent_stats), but the frontend matches teams by name, same as
-    buildFdrByTeam/buildTeamFixtureList on the frontend.
-    """
-    current_teams = query_df(
-        "SELECT team_id, name FROM teams WHERE season_id = ?", (CURRENT_SEASON,)
+
+def _all_finished_with_names() -> pd.DataFrame:
+    """Every finished fixture, ANY season, with both sides' names already
+    joined in (not just team_ids) -- the join happens ONCE here rather than
+    per-team in the callers below, and matching across seasons is by NAME
+    from the start (see module docstring for why)."""
+    return query_df(
+        """SELECT th.name AS home_team, ta.name AS away_team,
+                  f.home_goals, f.away_goals, f.kickoff_time
+           FROM fixtures f
+           JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+           JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
+           WHERE f.finished = 1 AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL"""
     )
+
+
+def _recent_form_by_team(n: int = RECENT_FORM_GAMES) -> dict[str, dict]:
+    """Last n REAL finished results per CURRENT team, HOME and AWAY tracked
+    SEPARATELY (not blended into one average) -- a team's home form and away
+    form can genuinely differ, and since their NEXT fixture is specifically
+    either home or away, a single blended number would obscure whichever
+    split actually matters for it. Each split independently spans a season
+    boundary if the current season doesn't have n finished games of its own
+    at that venue yet -- e.g. right now, pre-season, CURRENT_SEASON has ZERO
+    finished fixtures at all, so restricting this to CURRENT_SEASON only
+    would leave every team with no recent-form data whatsoever. Matched by
+    team NAME across seasons (see module docstring) -- team_id is NOT a
+    safe cross-season key.
+    """
+    current_teams = _current_teams()
     if current_teams.empty:
         return {}
 
-    all_finished = query_df(
-        """SELECT home_team_id, away_team_id, home_goals, away_goals, kickoff_time
-           FROM fixtures
-           WHERE finished = 1 AND home_goals IS NOT NULL AND away_goals IS NOT NULL"""
-    )
+    all_finished = _all_finished_with_names()
     if all_finished.empty:
         return {}
 
     out: dict[str, dict] = {}
     for row in current_teams.itertuples():
-        team_id, name = row.team_id, row.name
-        team_games = all_finished[
-            (all_finished["home_team_id"] == team_id) | (all_finished["away_team_id"] == team_id)
-        ].sort_values("kickoff_time")
-        recent = team_games.tail(n)
-        if recent.empty:
+        name = row.name
+        home_games = all_finished[all_finished["home_team"] == name].sort_values("kickoff_time").tail(n)
+        away_games = all_finished[all_finished["away_team"] == name].sort_values("kickoff_time").tail(n)
+        if home_games.empty and away_games.empty:
             continue
-        gf, ga = [], []
-        for r in recent.itertuples():
-            if r.home_team_id == team_id:
-                gf.append(r.home_goals)
-                ga.append(r.away_goals)
-            else:
-                gf.append(r.away_goals)
-                ga.append(r.home_goals)
+
         out[name] = {
-            "gf_per_game": round(sum(gf) / len(gf), 2),
-            "ga_per_game": round(sum(ga) / len(ga), 2),
-            "games": len(gf),
+            "home_gf_per_game": round(float(home_games["home_goals"].mean()), 2) if not home_games.empty else None,
+            "home_ga_per_game": round(float(home_games["away_goals"].mean()), 2) if not home_games.empty else None,
+            "home_games": int(len(home_games)),
+            "away_gf_per_game": round(float(away_games["away_goals"].mean()), 2) if not away_games.empty else None,
+            "away_ga_per_game": round(float(away_games["home_goals"].mean()), 2) if not away_games.empty else None,
+            "away_games": int(len(away_games)),
+        }
+    return out
+
+
+def _next_meeting_by_team() -> dict[tuple[int, int], int]:
+    """{(team_id, opponent_id): next_gw} from CURRENT_SEASON's unplayed
+    fixtures -- team_id is safe here, entirely WITHIN one season (no
+    cross-season comparison) -- shared helper for _team_last_season_stats'
+    favorable/unfavorable opponent entries, same convention as players.py's
+    _opponent_stats."""
+    upcoming = query_df(
+        "SELECT gw, home_team_id, away_team_id FROM fixtures WHERE season_id = ? AND finished = 0",
+        (CURRENT_SEASON,),
+    )
+    next_meeting: dict[tuple[int, int], int] = {}
+    for r in upcoming.itertuples():
+        for team_id, opp_id in ((r.home_team_id, r.away_team_id), (r.away_team_id, r.home_team_id)):
+            key = (team_id, opp_id)
+            if key not in next_meeting or r.gw < next_meeting[key]:
+                next_meeting[key] = int(r.gw)
+    return next_meeting
+
+
+def _team_last_season_stats() -> dict[str, dict]:
+    """Per CURRENT team, from LAST_COMPLETE_SEASON only (a single real
+    season's record, not the multi-season blend _recent_form_by_team falls
+    back to -- "stats for last year" is meant literally here):
+      - goals for/against, split by venue
+      - clean sheets, split by venue (+ total)
+      - favorable/unfavorable opponents (top N each), ranked by average
+        GOAL DIFFERENCE per meeting last season (a club normally meets each
+        opponent exactly twice -- home and away -- so this is usually a
+        2-game average, occasionally 1 if a fixture was voided/unplayed)
+    A newly-promoted club with zero top-flight games last season is simply
+    omitted (nothing meaningful to report), not included with all-zero stats.
+    Matched by team NAME throughout the cross-season parts (see module
+    docstring) -- team_id is only used for the next_gw lookup, which is
+    entirely WITHIN CURRENT_SEASON and therefore safe.
+    """
+    current_teams = _current_teams()
+    if current_teams.empty:
+        return {}
+
+    last_season_games = query_df(
+        """SELECT th.name AS home_team, ta.name AS away_team, f.home_goals, f.away_goals
+           FROM fixtures f
+           JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+           JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
+           WHERE f.season_id = ? AND f.finished = 1
+                 AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
+        (LAST_COMPLETE_SEASON,),
+    )
+    if last_season_games.empty:
+        return {}
+
+    next_meeting = _next_meeting_by_team()
+    current_team_id_by_name = dict(zip(current_teams["name"], current_teams["team_id"]))
+
+    out: dict[str, dict] = {}
+    for row in current_teams.itertuples():
+        team_id, name = row.team_id, row.name
+        home = last_season_games[last_season_games["home_team"] == name]
+        away = last_season_games[last_season_games["away_team"] == name]
+        if home.empty and away.empty:
+            continue
+
+        home_meetings = pd.DataFrame({
+            "opponent": home["away_team"],
+            "goal_diff": home["home_goals"] - home["away_goals"],
+        })
+        away_meetings = pd.DataFrame({
+            "opponent": away["home_team"],
+            "goal_diff": away["away_goals"] - away["home_goals"],
+        })
+        all_meetings = pd.concat([home_meetings, away_meetings])
+        opp_avg = all_meetings.groupby("opponent")["goal_diff"].mean()
+        opp_games = all_meetings.groupby("opponent")["goal_diff"].count()
+        ranked = opp_avg.sort_values(ascending=False)
+
+        def build_opp_entry(opp_name) -> dict:
+            # None if the opponent isn't in the league THIS season (e.g.
+            # relegated) -- team_id-based next_gw lookup only makes sense
+            # for an opponent that still has a CURRENT_SEASON team_id.
+            opp_current_id = current_team_id_by_name.get(opp_name)
+            next_gw = next_meeting.get((team_id, opp_current_id)) if opp_current_id is not None else None
+            return {
+                "opponent": opp_name,
+                "avg_goal_diff": round(float(opp_avg[opp_name]), 2),
+                "games": int(opp_games[opp_name]),
+                "next_gw": next_gw,
+            }
+
+        favorable = [build_opp_entry(opp) for opp in ranked.head(FAVORABLE_OPPONENTS_TOP_N).index]
+        unfavorable = [build_opp_entry(opp) for opp in ranked.tail(FAVORABLE_OPPONENTS_TOP_N).index[::-1]]
+
+        out[name] = {
+            "goals_for_home": int(home["home_goals"].sum()),
+            "goals_for_away": int(away["away_goals"].sum()),
+            "goals_against_home": int(home["away_goals"].sum()),
+            "goals_against_away": int(away["home_goals"].sum()),
+            "clean_sheets_home": int((home["away_goals"] == 0).sum()),
+            "clean_sheets_away": int((away["home_goals"] == 0).sum()),
+            "clean_sheets_total": int((home["away_goals"] == 0).sum()) + int((away["home_goals"] == 0).sum()),
+            "games_home": int(len(home)),
+            "games_away": int(len(away)),
+            "favorable_opponents": favorable,
+            "unfavorable_opponents": unfavorable,
         }
     return out
 
@@ -137,4 +276,9 @@ def list_fixtures(
         row["away_clean_sheet_prob"] = cs_prob.get((row["fixture_id"], away_team_id))
         fixtures.append(row)
 
-    return {"season": CURRENT_SEASON, "fixtures": fixtures, "recent_form": _recent_form_by_team()}
+    return {
+        "season": CURRENT_SEASON,
+        "fixtures": fixtures,
+        "recent_form": _recent_form_by_team(),
+        "last_season_team_stats": _team_last_season_stats(),
+    }

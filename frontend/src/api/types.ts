@@ -185,9 +185,38 @@ export interface Fixture {
 }
 
 export interface TeamRecentForm {
-  gf_per_game: number
-  ga_per_game: number
+  // Home and away tracked SEPARATELY (not blended) -- a team's home form and
+  // away form can genuinely differ, and their NEXT fixture is specifically
+  // either home or away, so a single blended number would obscure whichever
+  // split actually matters for it. null only when that team has zero real
+  // games at that specific venue anywhere in the cache (extremely rare).
+  home_gf_per_game: number | null
+  home_ga_per_game: number | null
+  home_games: number
+  away_gf_per_game: number | null
+  away_ga_per_game: number | null
+  away_games: number
+}
+
+export interface TeamOpponentEntry {
+  opponent: string
+  avg_goal_diff: number
   games: number
+  next_gw: number | null
+}
+
+export interface TeamLastSeasonStats {
+  goals_for_home: number
+  goals_for_away: number
+  goals_against_home: number
+  goals_against_away: number
+  clean_sheets_home: number
+  clean_sheets_away: number
+  clean_sheets_total: number
+  games_home: number
+  games_away: number
+  favorable_opponents: TeamOpponentEntry[]
+  unfavorable_opponents: TeamOpponentEntry[]
 }
 
 export interface FixturesResponse {
@@ -200,6 +229,10 @@ export interface FixturesResponse {
   // showing nothing). See backend/app/routers/fixtures.py's
   // _recent_form_by_team docstring.
   recent_form: Record<string, TeamRecentForm>
+  // Keyed by team name -- each team's FULL last-COMPLETE-season record
+  // (goals/clean sheets by venue, favorable/unfavorable opponents). See
+  // backend/app/routers/fixtures.py's _team_last_season_stats docstring.
+  last_season_team_stats: Record<string, TeamLastSeasonStats>
 }
 
 export interface OptimalSquad {
