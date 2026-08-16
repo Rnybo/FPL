@@ -692,6 +692,114 @@ def test_fixtures_last_season_team_stats_favorable_opponent_matches_a_real_upcom
     assert checked_any, "no favorable/unfavorable opponent entry had a next_gw set -- test wasn't exercised"
 
 
+def test_fixtures_goals_vs_opponent_shape_and_scoping():
+    """One row per fixture in the requested [gw_start, gw_end] window for
+    EACH team (a double gameweek gives two rows for that gw), venue_now
+    must be H or A, gw must fall inside the requested range, and any goals
+    figure is either a real non-negative int or None (never a stray 0
+    standing in for "didn't meet") -- see fixtures.py's
+    _team_goals_vs_opponent_last_season docstring."""
+    resp = client.get("/api/fixtures?gw_start=1&gw_end=5")
+    data = resp.json()
+    assert "goals_vs_opponent" in data
+    checked_any = False
+    for team, rows in data["goals_vs_opponent"].items():
+        assert team
+        assert len(rows) > 0
+        for r in rows:
+            checked_any = True
+            assert 1 <= r["gw"] <= 5
+            assert r["venue_now"] in ("H", "A")
+            assert r["opponent"]
+            for key in ("home_gf_last_season", "home_ga_last_season", "away_gf_last_season", "away_ga_last_season"):
+                assert r[key] is None or (isinstance(r[key], int) and r[key] >= 0)
+    assert checked_any, "no team in the sample had goals_vs_opponent rows -- test wasn't exercised"
+
+
+def test_fixtures_goals_vs_opponent_matches_real_fixtures_and_last_season_history():
+    """Cross-check against two independent sources: the CURRENT fixture
+    (opponent + venue) must match a real scheduled fixture in this same
+    response, and where a goals figure IS set, it must match a real
+    last-season row recomputed directly from the fixtures table (joined by
+    NAME -- team_id isn't stable across seasons, see module docstring)."""
+    import sqlite3
+    from app.config import DB_PATH
+    from app.routers.fixtures import LAST_COMPLETE_SEASON
+
+    resp = client.get("/api/fixtures?gw_start=1&gw_end=3")
+    data = resp.json()
+    fixtures = data["fixtures"]
+    checked_fixture = checked_history = False
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    for team, rows in data["goals_vs_opponent"].items():
+        for r in rows:
+            match = next(
+                (f for f in fixtures if f["gw"] == r["gw"]
+                 and team in (f["home_team"], f["away_team"])
+                 and r["opponent"] in (f["home_team"], f["away_team"])),
+                None,
+            )
+            assert match, f"{team}: no real GW{r['gw']} fixture vs {r['opponent']}"
+            expected_venue = "H" if match["home_team"] == team else "A"
+            assert r["venue_now"] == expected_venue
+            checked_fixture = True
+
+            if r["home_gf_last_season"] is not None:
+                checked_history = True
+                real = conn.execute(
+                    """SELECT f.home_goals, f.away_goals FROM fixtures f
+                       JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+                       JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
+                       WHERE f.season_id = ? AND f.finished = 1 AND th.name = ? AND ta.name = ?
+                             AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
+                    (LAST_COMPLETE_SEASON, team, r["opponent"]),
+                ).fetchall()
+                assert r["home_gf_last_season"] == sum(x["home_goals"] for x in real)
+                assert r["home_ga_last_season"] == sum(x["away_goals"] for x in real)
+
+    conn.close()
+    assert checked_fixture, "no row matched against a real fixture -- test wasn't exercised"
+    assert checked_history, "no row had last-season history to cross-check -- test wasn't exercised"
+
+
+def test_fixtures_goals_vs_opponent_no_meeting_is_none_not_zero():
+    """A newly-promoted opponent (no top-flight games last season at all)
+    must show None ("-" in the UI) for both legs, never a coincidental 0
+    that would misleadingly look like "met and drew 0-0"."""
+    import sqlite3
+    from app.config import DB_PATH
+    from app.routers.fixtures import LAST_COMPLETE_SEASON
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    played_last_season = {
+        r["name"] for r in conn.execute(
+            """SELECT DISTINCT t.name FROM fixtures f
+               JOIN teams t ON t.team_id IN (f.home_team_id, f.away_team_id) AND t.season_id = ?
+               WHERE f.season_id = ?""",
+            (LAST_COMPLETE_SEASON, LAST_COMPLETE_SEASON),
+        ).fetchall()
+    }
+    conn.close()
+
+    resp = client.get("/api/fixtures?gw_start=1&gw_end=10")
+    data = resp.json()
+    checked_any = False
+    for team, rows in data["goals_vs_opponent"].items():
+        for r in rows:
+            if r["opponent"] in played_last_season:
+                continue  # opponent has real history -- not the case being tested
+            checked_any = True
+            assert r["home_gf_last_season"] is None
+            assert r["home_ga_last_season"] is None
+            assert r["away_gf_last_season"] is None
+            assert r["away_ga_last_season"] is None
+    assert checked_any, "no row referenced a newly-promoted opponent -- test wasn't exercised"
+
+
 def test_squad_optimal_respects_budget_and_positions():
     resp = client.get("/api/squad/optimal")
     assert resp.status_code == 200

@@ -8,6 +8,10 @@ attaches:
   - `last_season_team_stats`: each current team's full LAST_COMPLETE_SEASON
     record -- goals/conceded by venue, clean sheets, favorable/unfavorable
     opponents (see _team_last_season_stats)
+  - `goals_vs_opponent`: for each of the SELECTED gameweeks, the opponent and
+    how many goals this team scored/conceded against that SAME opponent last
+    season, home/away legs separate (see _team_goals_vs_opponent_last_season)
+    -- mirrors players.py's points_vs_opponent_last_season at team level
 
 IMPORTANT data quirk driving a design choice below: FPL's numeric team `id`
 is NOT a stable per-club identifier across seasons -- it's reassigned each
@@ -239,6 +243,69 @@ def _team_last_season_stats() -> dict[str, dict]:
     return out
 
 
+def _team_goals_vs_opponent_last_season(current_fixtures: pd.DataFrame) -> dict[str, list[dict]]:
+    """For each CURRENT team, for each of THEIR fixtures within the already
+    gw-filtered `current_fixtures` (the same window /api/fixtures was
+    called with): the opponent, and how many goals THIS team scored/
+    conceded against that SAME opponent LAST SEASON, home leg and away leg
+    reported separately (a club meets each opponent once at each venue in a
+    normal season). Mirrors players.py's _points_vs_opponent_last_season,
+    but at team level with real goals instead of individual fantasy points
+    (a team has two separate meaningful numbers here -- scored AND
+    conceded -- where a player's points already combine both into one).
+    `venue_now` says which leg is "the same fixture, one year on" -- the
+    frontend highlights that column. Any goals figure is None if they
+    didn't meet at that venue last season at all (e.g. a newly-promoted
+    opponent) -- shown as "-" rather than a misleading 0. Matched by team
+    NAME across the season boundary (see module docstring -- team_id is
+    NOT stable across seasons in this cache).
+    """
+    if current_fixtures.empty:
+        return {}
+
+    last_season_games = query_df(
+        """SELECT th.name AS home_team, ta.name AS away_team, f.home_goals, f.away_goals
+           FROM fixtures f
+           JOIN teams th ON f.home_team_id = th.team_id AND f.season_id = th.season_id
+           JOIN teams ta ON f.away_team_id = ta.team_id AND f.season_id = ta.season_id
+           WHERE f.season_id = ? AND f.finished = 1
+                 AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL""",
+        (LAST_COMPLETE_SEASON,),
+    )
+
+    out: dict[str, list[dict]] = {}
+    sorted_fixtures = current_fixtures.sort_values("gw")
+    for row in sorted_fixtures.itertuples():
+        for team_name, opponent_name, is_home in (
+            (row.home_team, row.away_team, True),
+            (row.away_team, row.home_team, False),
+        ):
+            if last_season_games.empty:
+                home_gf = home_ga = away_gf = away_ga = None
+            else:
+                vs_home = last_season_games[
+                    (last_season_games["home_team"] == team_name) & (last_season_games["away_team"] == opponent_name)
+                ]
+                vs_away = last_season_games[
+                    (last_season_games["away_team"] == team_name) & (last_season_games["home_team"] == opponent_name)
+                ]
+                home_gf = int(vs_home["home_goals"].sum()) if not vs_home.empty else None
+                home_ga = int(vs_home["away_goals"].sum()) if not vs_home.empty else None
+                away_gf = int(vs_away["away_goals"].sum()) if not vs_away.empty else None
+                away_ga = int(vs_away["home_goals"].sum()) if not vs_away.empty else None
+
+            out.setdefault(team_name, []).append({
+                "gw": int(row.gw),
+                "opponent": opponent_name,
+                "venue_now": "H" if is_home else "A",
+                "home_gf_last_season": home_gf,
+                "home_ga_last_season": home_ga,
+                "away_gf_last_season": away_gf,
+                "away_ga_last_season": away_ga,
+            })
+    return out
+
+
 @router.get("")
 def list_fixtures(
     gw: int | None = None,
@@ -281,4 +348,5 @@ def list_fixtures(
         "fixtures": fixtures,
         "recent_form": _recent_form_by_team(),
         "last_season_team_stats": _team_last_season_stats(),
+        "goals_vs_opponent": _team_goals_vs_opponent_last_season(df),
     }

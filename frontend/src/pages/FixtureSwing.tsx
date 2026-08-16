@@ -9,14 +9,6 @@ import TeamDetailModal from '../components/TeamDetailModal'
 // default view" for visual consistency.
 const DEFAULT_WINDOW = 8
 
-// How many of a team's most recent FINISHED games "recent form" looks back
-// across -- independent of the GW window above (that's forward-looking;
-// this is deliberately backward-looking, so it stays fixed regardless of
-// which upcoming range is selected). Matches the backend's own
-// RECENT_FORM_GAMES -- just for the label text below, the actual grouping
-// happens server-side now (see recent_form below).
-const FORM_GAMES = 5
-
 type SortField = 'avgFdr' | 'nextCs' | 'gf' | 'ga'
 
 // "Which teams have the best run of fixtures coming up" -- a standalone,
@@ -25,14 +17,16 @@ type SortField = 'avgFdr' | 'nextCs' | 'gf' | 'ga'
 // windowing/sorting client-side -- no backend changes needed for that part,
 // this reuses the exact same /api/fixtures data Player Scout already has,
 // just grouped and ranked by TEAM instead of shown alongside individual
-// players. Clean-sheet %, recent form, and last-season stats DO rely on
-// backend additions (see fixtures.py's home/away_clean_sheet_prob,
-// recent_form, last_season_team_stats).
+// players. Clean-sheet %, recent form, last-season stats, and goals-vs-
+// opponent DO rely on backend additions (see fixtures.py's
+// home/away_clean_sheet_prob, recent_form, last_season_team_stats,
+// goals_vs_opponent).
 export default function FixtureSwing() {
   const { data, isLoading, isError, error } = useFixtures()
   const fixtures = useMemo(() => data?.fixtures ?? [], [data])
   const recentForm = data?.recent_form ?? {}
   const lastSeasonTeamStats = data?.last_season_team_stats ?? {}
+  const goalsVsOpponent = data?.goals_vs_opponent ?? {}
 
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null)
 
@@ -69,8 +63,8 @@ export default function FixtureSwing() {
 
   const [sortField, setSortField] = useState<SortField>('avgFdr')
   // FDR: lower is better, so ascending ("easiest first") is the natural
-  // default. Everything else here (clean sheet %, goals for) is "higher is
-  // better", and goals against is "lower is better" -- each column's OWN
+  // default. Everything else here (clean sheet %, goals scored) is "higher
+  // is better", and goals conceded is "lower is better" -- each column's OWN
   // first click below picks whichever direction actually means "best team
   // first" for that specific stat, same reasoning as Player Scout's FDR
   // column defaulting to ascending while everything else defaults to desc.
@@ -98,34 +92,41 @@ export default function FixtureSwing() {
       // "Next CS%" = the clean-sheet chance for the team's NEXT fixture
       // WITHIN this window (the first one chronologically) -- contextual to
       // whatever range is selected, same as everything else on this page.
-      const nextEntry = inWindow[0]
       const nextCs = inWindow.find((e) => e.cleanSheetProb != null)?.cleanSheetProb ?? null
-      const form = recentForm[team]
-      // GF/game and GA/game show the split matching whichever VENUE their
-      // next fixture in this window actually is -- home form and away form
-      // can differ a lot, and a single blended average would obscure
-      // whichever number is actually relevant to the upcoming match.
-      const nextVenue: 'H' | 'A' | null = nextEntry ? (nextEntry.isHome ? 'H' : 'A') : null
-      const contextGf = nextVenue === 'H' ? (form?.home_gf_per_game ?? null) : nextVenue === 'A' ? (form?.away_gf_per_game ?? null) : null
-      const contextGa = nextVenue === 'H' ? (form?.home_ga_per_game ?? null) : nextVenue === 'A' ? (form?.away_ga_per_game ?? null) : null
-      return { team, entries: inWindow, avgFdr, nextCs, nextVenue, contextGf, contextGa }
+
+      // Next opponent + goals scored/conceded against that SAME opponent
+      // last season, whichever leg (home/away) matches the actual upcoming
+      // venue -- goalsVsOpponent is already gw-window-scoped and ordered by
+      // gw server-side, so its first entry IS the next fixture in range.
+      const vsOppRows = goalsVsOpponent[team] ?? []
+      const next = vsOppRows[0]
+      const nextOpponent = next?.opponent ?? null
+      const nextVenue: 'H' | 'A' | null = next?.venue_now ?? null
+      const nextGoalsFor = next
+        ? (next.venue_now === 'H' ? next.home_gf_last_season : next.away_gf_last_season)
+        : null
+      const nextGoalsAgainst = next
+        ? (next.venue_now === 'H' ? next.home_ga_last_season : next.away_ga_last_season)
+        : null
+
+      return { team, entries: inWindow, avgFdr, nextCs, nextOpponent, nextVenue, nextGoalsFor, nextGoalsAgainst }
     })
     return rows.sort((a, b) => {
       const va = sortField === 'avgFdr' ? a.avgFdr
         : sortField === 'nextCs' ? a.nextCs
-        : sortField === 'gf' ? a.contextGf
-        : a.contextGa
+        : sortField === 'gf' ? a.nextGoalsFor
+        : a.nextGoalsAgainst
       const vb = sortField === 'avgFdr' ? b.avgFdr
         : sortField === 'nextCs' ? b.nextCs
-        : sortField === 'gf' ? b.contextGf
-        : b.contextGa
+        : sortField === 'gf' ? b.nextGoalsFor
+        : b.nextGoalsAgainst
       // Teams with no data for the ACTIVE sort column sort last regardless
       // of direction -- there's nothing to rank them by on that axis.
       if (va == null) return 1
       if (vb == null) return -1
       return sortDir === 'asc' ? va - vb : vb - va
     })
-  }, [teamFixtureList, effectiveStart, effectiveEnd, sortField, sortDir, recentForm])
+  }, [teamFixtureList, effectiveStart, effectiveEnd, sortField, sortDir, goalsVsOpponent])
 
   // Double/blank gameweeks -- only upcoming ones (gw >= currentGw), and only
   // gameweeks that actually HAVE a double or blank for at least one team
@@ -158,9 +159,10 @@ export default function FixtureSwing() {
       <p className="text-slate-500 text-sm mb-4">
         Which teams have the best run of fixtures coming up -- pick players from the top of this list,
         avoid the bottom. Ranked over GW{effectiveStart}
-        {effectiveEnd !== effectiveStart ? `-${effectiveEnd}` : ''}. GF/GA show whichever venue (H/A) their
-        NEXT fixture in this range actually is, from their last {FORM_GAMES} real games at that venue --
-        click a team for the full home/away breakdown and last season's record.
+        {effectiveEnd !== effectiveStart ? `-${effectiveEnd}` : ''}. "Next" shows who they play next in this
+        range, and how many goals they scored/conceded against that SAME opponent last season (home/away as
+        relevant) -- click a team for the full breakdown across every gameweek in this range, plus last
+        season's complete home/away record.
       </p>
 
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -189,15 +191,16 @@ export default function FixtureSwing() {
       </div>
 
       <div className="overflow-x-auto -mx-3 sm:mx-0 px-3 sm:px-0">
-      <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden min-w-[720px]">
+      <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden min-w-[820px]">
         <thead>
           <tr className="bg-slate-100 text-left text-slate-500">
             <th className="py-2 pr-3 pl-3">Team</th>
             <th className="py-2 pr-3">Fixtures</th>
             <SortHeader field="avgFdr" label="Avg FDR" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} />
             <SortHeader field="nextCs" label="Next CS%" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
-            <SortHeader field="gf" label="GF (next)" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
-            <SortHeader field="ga" label="GA (next)" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
+            <th className="py-2 pr-3">Next opponent</th>
+            <SortHeader field="gf" label="Next (goals)" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
+            <SortHeader field="ga" label="Next (conceded)" sortField={sortField} sortDir={sortDir} onClick={sortByColumn} muted />
           </tr>
         </thead>
         <tbody>
@@ -221,15 +224,16 @@ export default function FixtureSwing() {
               <td className="py-2 pr-3 text-right text-slate-500">
                 {row.nextCs != null ? `${(row.nextCs * 100).toFixed(0)}%` : '—'}
               </td>
-              <td className="py-2 pr-3 text-right text-slate-500">
-                {row.contextGf != null ? (
-                  <>{row.contextGf.toFixed(2)} <span className="text-[10px] text-slate-400">({row.nextVenue})</span></>
+              <td className="py-2 pr-3 text-slate-600">
+                {row.nextOpponent ? (
+                  <>{row.nextOpponent} <span className="text-[10px] text-slate-400">({row.nextVenue})</span></>
                 ) : '—'}
               </td>
               <td className="py-2 pr-3 text-right text-slate-500">
-                {row.contextGa != null ? (
-                  <>{row.contextGa.toFixed(2)} <span className="text-[10px] text-slate-400">({row.nextVenue})</span></>
-                ) : '—'}
+                {row.nextGoalsFor != null ? row.nextGoalsFor : '—'}
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-500">
+                {row.nextGoalsAgainst != null ? row.nextGoalsAgainst : '—'}
               </td>
             </tr>
           ))}
@@ -270,6 +274,7 @@ export default function FixtureSwing() {
           team={selectedTeam}
           recentForm={recentForm[selectedTeam]}
           lastSeasonStats={lastSeasonTeamStats[selectedTeam]}
+          goalsVsOpponent={goalsVsOpponent[selectedTeam] ?? []}
           onClose={() => setSelectedTeam(null)}
         />
       )}

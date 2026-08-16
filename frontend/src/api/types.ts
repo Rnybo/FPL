@@ -219,6 +219,16 @@ export interface TeamLastSeasonStats {
   unfavorable_opponents: TeamOpponentEntry[]
 }
 
+export interface TeamGoalsVsOpponentEntry {
+  gw: number
+  opponent: string
+  venue_now: 'H' | 'A'
+  home_gf_last_season: number | null
+  home_ga_last_season: number | null
+  away_gf_last_season: number | null
+  away_ga_last_season: number | null
+}
+
 export interface FixturesResponse {
   season: string
   fixtures: Fixture[]
@@ -233,6 +243,12 @@ export interface FixturesResponse {
   // (goals/clean sheets by venue, favorable/unfavorable opponents). See
   // backend/app/routers/fixtures.py's _team_last_season_stats docstring.
   last_season_team_stats: Record<string, TeamLastSeasonStats>
+  // Keyed by team name -- for each of THEIR fixtures in the requested
+  // [gw_start, gw_end] window, the opponent and goals scored/conceded
+  // against that SAME opponent last season, home/away legs separate.
+  // Mirrors Player Scout's points_vs_opponent_last_season, at team level.
+  // See backend/app/routers/fixtures.py's _team_goals_vs_opponent_last_season.
+  goals_vs_opponent: Record<string, TeamGoalsVsOpponentEntry[]>
 }
 
 export interface OptimalSquad {

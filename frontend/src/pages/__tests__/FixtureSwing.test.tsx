@@ -22,10 +22,12 @@ function renderWithClient(ui: React.ReactElement) {
 // GW4: Easy FC plays TWICE (a double), Hard FC plays ZERO times (a blank) --
 // backs the Double & Blank Gameweeks calendar section.
 //
-// recent_form below is deliberately set up so Easy FC's NEXT fixture (GW2)
-// is HOME and only has home-split data, while Hard FC's NEXT fixture (GW2)
-// is AWAY and only has away-split data -- exercises BOTH the "(H)" and
-// "(A)" contextual paths on the main table.
+// goals_vs_opponent below gives Easy FC 6 entries (GW2-4, with GW4's double
+// counted as 2) -- enough to exercise the modal's pagination (5/page) --
+// and Hard FC just 1, enough for the main table's "next opponent" cell.
+// Easy FC's first entry (GW2, home) drives the main table's "Next (goals)"/
+// "Next (conceded)" for Easy FC; Hard FC's first entry (GW2, away) does the
+// same for Hard FC -- deliberately different venues to exercise both paths.
 const MOCK_FIXTURES = {
   season: '2026-27',
   fixtures: [
@@ -63,6 +65,19 @@ const MOCK_FIXTURES = {
       favorable_opponents: [{ opponent: 'Hard FC', avg_goal_diff: 3.0, games: 2, next_gw: 5 }],
       unfavorable_opponents: [{ opponent: 'Filler Rovers', avg_goal_diff: -1.0, games: 2, next_gw: null }],
     },
+  },
+  goals_vs_opponent: {
+    'Easy FC': [
+      { gw: 2, opponent: 'Filler United', venue_now: 'H', home_gf_last_season: 3, home_ga_last_season: 1, away_gf_last_season: 2, away_ga_last_season: 2 },
+      { gw: 3, opponent: 'Filler Rovers', venue_now: 'H', home_gf_last_season: 1, home_ga_last_season: 0, away_gf_last_season: 2, away_ga_last_season: 1 },
+      { gw: 4, opponent: 'Filler United', venue_now: 'H', home_gf_last_season: 3, home_ga_last_season: 1, away_gf_last_season: 2, away_ga_last_season: 2 },
+      { gw: 4, opponent: 'Filler Rovers', venue_now: 'A', home_gf_last_season: 1, home_ga_last_season: 0, away_gf_last_season: 2, away_ga_last_season: 1 },
+      { gw: 5, opponent: 'Promoted FC', venue_now: 'H', home_gf_last_season: null, home_ga_last_season: null, away_gf_last_season: null, away_ga_last_season: null },
+      { gw: 6, opponent: 'Team Y', venue_now: 'A', home_gf_last_season: 2, home_ga_last_season: 2, away_gf_last_season: 1, away_ga_last_season: 3 },
+    ],
+    'Hard FC': [
+      { gw: 2, opponent: 'Filler Rovers', venue_now: 'A', home_gf_last_season: 0, home_ga_last_season: 2, away_gf_last_season: 1, away_ga_last_season: 4 },
+    ],
   },
 }
 
@@ -180,32 +195,34 @@ describe('FixtureSwing', () => {
     expect(easyRowIndex).toBeLessThan(hardRowIndex) // 60% ranks above 5%
   })
 
-  it('GF (next)/GA (next) show whichever venue split matches each team\'s actual next fixture, with an (H)/(A) badge', () => {
+  it('shows the next opponent (with venue) and goals scored/conceded against them last season', () => {
     vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
     renderWithClient(<FixtureSwing />)
 
-    // Easy FC's next fixture (GW2) is HOME -> shows the home split.
+    // Easy FC's first goals_vs_opponent entry: GW2 vs Filler United, home, 3-1.
     const easyRow = screen.getByText('Easy FC').closest('tr')!
-    expect(within(easyRow).getByText('3.00')).toBeInTheDocument()
-    expect(within(easyRow).getByText('0.00')).toBeInTheDocument()
+    expect(within(easyRow).getByText('Filler United', { exact: false })).toBeInTheDocument()
     expect(within(easyRow).getAllByText('(H)').length).toBeGreaterThan(0)
+    expect(within(easyRow).getByText('3')).toBeInTheDocument() // goals scored
+    expect(within(easyRow).getByText('1')).toBeInTheDocument() // goals conceded
 
-    // Hard FC's next fixture (GW2) is AWAY -> shows the away split, not home.
+    // Hard FC's only entry: GW2 vs Filler Rovers, away, 1-4 (their own gf-ga).
     const hardRow = screen.getByText('Hard FC').closest('tr')!
-    expect(within(hardRow).getByText('0.50')).toBeInTheDocument()
-    expect(within(hardRow).getByText('2.50')).toBeInTheDocument()
+    expect(within(hardRow).getByText('Filler Rovers', { exact: false })).toBeInTheDocument()
     expect(within(hardRow).getAllByText('(A)').length).toBeGreaterThan(0)
+    expect(within(hardRow).getByText('4')).toBeInTheDocument() // goals conceded (their away_ga)
   })
 
-  it('a team with no recent_form entry at all shows "—" for GF (next)/GA (next), not a crash', () => {
+  it('a team with no goals_vs_opponent entries shows "—" for next opponent/goals/conceded, not a crash', () => {
     vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
     renderWithClient(<FixtureSwing />)
 
-    // Blank FC has no entry in recent_form at all (see MOCK_FIXTURES).
+    // Blank FC has no entry in goals_vs_opponent at all (see MOCK_FIXTURES).
     const blankRow = screen.getByText('Blank FC').closest('tr')!
     const cells = within(blankRow).getAllByRole('cell')
-    expect(cells[cells.length - 2]).toHaveTextContent('—') // GF (next)
-    expect(cells[cells.length - 1]).toHaveTextContent('—') // GA (next)
+    expect(cells[cells.length - 3]).toHaveTextContent('—') // Next opponent
+    expect(cells[cells.length - 2]).toHaveTextContent('—') // Next (goals)
+    expect(cells[cells.length - 1]).toHaveTextContent('—') // Next (conceded)
   })
 
   it('lists upcoming double and blank gameweeks', () => {
@@ -250,7 +267,10 @@ describe('FixtureSwing', () => {
     expect(within(dialog).getByText('40')).toBeInTheDocument() // goals_for_home
     expect(within(dialog).getByText('13')).toBeInTheDocument() // clean_sheets_total
     expect(within(dialog).getByText(/hard fc/i)).toBeInTheDocument() // favorable opponent
-    expect(within(dialog).getByText(/filler rovers/i)).toBeInTheDocument() // unfavorable opponent
+    // "Filler Rovers" also appears in the new Goals vs opponent table below --
+    // just confirm it shows up somewhere, rather than over-scoping to one
+    // specific occurrence among several legitimate ones.
+    expect(within(dialog).getAllByText(/filler rovers/i).length).toBeGreaterThan(0)
   })
 
   it('closes the team detail modal', async () => {
@@ -272,5 +292,44 @@ describe('FixtureSwing', () => {
     await user.click(screen.getByText('Hard FC')) // no last_season_team_stats entry in the mock
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/no last-season data/i)).toBeInTheDocument()
+  })
+
+  it('the modal\'s Goals vs opponent table shows every fixture in the selected range, paginated 5 at a time', async () => {
+    vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
+    renderWithClient(<FixtureSwing />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('Easy FC')) // has 6 goals_vs_opponent entries
+    const dialog = screen.getByRole('dialog')
+
+    expect(within(dialog).getByText(/goals vs opponent/i)).toBeInTheDocument()
+    // Page 1: first 5 of 6 rows -- GW6 (last one) not visible yet.
+    expect(within(dialog).getByText('1/2')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Team Y')).not.toBeInTheDocument()
+
+    await user.click(within(dialog).getByText(/next 5/i))
+    expect(within(dialog).getByText('Team Y')).toBeInTheDocument()
+    expect(within(dialog).getByText('2/2')).toBeInTheDocument()
+  })
+
+  it('the modal highlights the leg matching the fixture\'s venue, and shows "-" for a promoted opponent with no history', async () => {
+    vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
+    renderWithClient(<FixtureSwing />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('Easy FC'))
+    const dialog = screen.getByRole('dialog')
+
+    // GW2 vs Filler United, home -- "3-1" (home leg) should be highlighted,
+    // not the away leg ("2-2").
+    const gw2Row = within(dialog).getByText('2').closest('tr')!
+    const homeCell = within(gw2Row).getByText('3-1')
+    expect(homeCell.className).toMatch(/bg-emerald-50/)
+    const awayCell = within(gw2Row).getByText('2-2')
+    expect(awayCell.className).not.toMatch(/bg-emerald-50/)
+
+    // GW5 vs Promoted FC -- no history at all -- both legs show "-".
+    const gw5Row = within(dialog).getByText('Promoted FC').closest('tr')!
+    expect(within(gw5Row).getAllByText('-')).toHaveLength(2)
   })
 })

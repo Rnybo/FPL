@@ -1,15 +1,20 @@
+import { useState } from 'react'
 import { X } from 'lucide-react'
-import type { TeamRecentForm, TeamLastSeasonStats, TeamOpponentEntry } from '../api/types'
+import type { TeamRecentForm, TeamLastSeasonStats, TeamOpponentEntry, TeamGoalsVsOpponentEntry } from '../api/types'
 
 // Click-through detail for a team on Team Scout -- the main table only has
 // room for the ONE home/away split that's actually relevant to a team's
 // next fixture (see FixtureSwing.tsx); this shows the FULL picture: both
-// home and away recent form, last season's real record by venue, and
-// favorable/unfavorable opponents.
-export default function TeamDetailModal({ team, recentForm, lastSeasonStats, onClose }: {
+// home and away recent form, last season's real record by venue,
+// favorable/unfavorable opponents, and -- for every gameweek in the
+// currently selected range -- goals scored/conceded against that same
+// opponent last season (mirrors Player Scout's "Points vs opponent last
+// season" table, at team level with goals instead of fantasy points).
+export default function TeamDetailModal({ team, recentForm, lastSeasonStats, goalsVsOpponent, onClose }: {
   team: string
   recentForm?: TeamRecentForm
   lastSeasonStats?: TeamLastSeasonStats
+  goalsVsOpponent: TeamGoalsVsOpponentEntry[]
   onClose: () => void
 }) {
   return (
@@ -78,14 +83,16 @@ export default function TeamDetailModal({ team, recentForm, lastSeasonStats, onC
                 Favorable/unfavorable opponents, by average goal difference last season. Gameweek in
                 parentheses is when they next meet this season, if already scheduled.
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-6">
                 <OpponentTable title="Favorable opponents" entries={lastSeasonStats.favorable_opponents} tone="emerald" />
                 <OpponentTable title="Unfavorable opponents" entries={lastSeasonStats.unfavorable_opponents} tone="red" />
               </div>
             </>
           ) : (
-            <p className="text-xs text-slate-400">No last-season data (e.g. newly promoted).</p>
+            <p className="text-xs text-slate-400 mb-6">No last-season data (e.g. newly promoted).</p>
           )}
+
+          <GoalsVsOpponentTable entries={goalsVsOpponent} />
         </div>
       </div>
     </div>
@@ -134,6 +141,81 @@ function OpponentTable({ title, entries, tone }: { title: string; entries: TeamO
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// For each fixture in the CURRENTLY SELECTED gameweek range (Team Scout's
+// From/To GW inputs), goals scored/conceded (shown as "GF-GA") against that
+// SAME opponent last season -- home leg and away leg reported separately,
+// since a club meets each opponent once at each venue. The venue matching
+// THIS fixture is highlighted (emerald) -- "the same fixture, one year on".
+// A leg with no meeting at all last season (promoted opponent) shows "-".
+//
+// Paginated 5 rows at a time, same pattern as Player Scout's equivalent
+// table -- a wide GW range would otherwise dump too many rows in here.
+function GoalsVsOpponentTable({ entries }: { entries: TeamGoalsVsOpponentEntry[] }) {
+  const [page, setPage] = useState(0)
+  const pageSize = 5
+  const totalPages = Math.ceil(entries.length / pageSize)
+  const shown = entries.slice(page * pageSize, page * pageSize + pageSize)
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        <p className="text-xs font-semibold text-slate-500 tracking-wide">GOALS VS OPPONENT (SELECTED GAMEWEEKS)</p>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
+              className="text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-30 disabled:cursor-not-allowed">
+              ← Previous 5
+            </button>
+            <span className="text-[10px] text-slate-400">{page + 1}/{totalPages}</span>
+            <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page === totalPages - 1}
+              className="text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-30 disabled:cursor-not-allowed">
+              Next 5 →
+            </button>
+          </div>
+        )}
+      </div>
+      {entries.length === 0 ? (
+        <p className="text-xs text-slate-400">No fixtures in the selected gameweek range.</p>
+      ) : (
+        <>
+          <p className="text-[11px] text-slate-400 mb-2">
+            Goals scored-conceded against that same opponent last season -- highlighted cell is the leg
+            matching this fixture's venue. "-" means they didn't meet at that venue last season.
+          </p>
+          <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+            <thead>
+              <tr className="bg-slate-100 text-left text-slate-500">
+                <th className="px-3 py-1.5 font-semibold">GW</th>
+                <th className="px-3 py-1.5 font-semibold">Opponent</th>
+                <th className="px-3 py-1.5 font-semibold">Venue</th>
+                <th className="px-3 py-1.5 text-right font-semibold">Home (last season)</th>
+                <th className="px-3 py-1.5 text-right font-semibold">Away (last season)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((e, i) => (
+                <tr key={`${e.gw}-${e.opponent}`} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
+                  <td className="px-3 py-1.5 text-slate-500">{e.gw}</td>
+                  <td className="px-3 py-1.5 text-slate-800">{e.opponent}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{e.venue_now}</td>
+                  <td className={`px-3 py-1.5 text-right ${e.venue_now === 'H' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
+                    {e.home_gf_last_season != null && e.home_ga_last_season != null
+                      ? `${e.home_gf_last_season}-${e.home_ga_last_season}` : '-'}
+                  </td>
+                  <td className={`px-3 py-1.5 text-right ${e.venue_now === 'A' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
+                    {e.away_gf_last_season != null && e.away_ga_last_season != null
+                      ? `${e.away_gf_last_season}-${e.away_ga_last_season}` : '-'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   )
 }
