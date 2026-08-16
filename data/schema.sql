@@ -37,6 +37,16 @@ CREATE TABLE IF NOT EXISTS player_season (
     FOREIGN KEY (season_id) REFERENCES seasons(season_id)
 );
 
+-- Real ownership -- how many managers already have this player, straight
+-- from bootstrap-static's `selected_by_percent` (a string in the raw API,
+-- cast to REAL on the way in -- see fetch_current_roster.py). Only ever
+-- meaningfully populated for CURRENT_SEASON rows (ownership isn't a
+-- historical-seasons concept the way price is). Backs "differential value"
+-- -- FPL is a RELATIVE game (rank vs other managers), so a high-xP player
+-- everyone already owns gains you nothing; a similarly-good, low-owned pick
+-- is worth more strategically even at identical xP.
+ALTER TABLE player_season ADD COLUMN ownership_pct REAL;
+
 CREATE TABLE IF NOT EXISTS fixtures (
     fixture_id      INTEGER PRIMARY KEY,
     season_id       TEXT,

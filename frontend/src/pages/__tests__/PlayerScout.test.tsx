@@ -12,6 +12,9 @@ const MOCK_PLAYERS = {
   players: [
     {
       player_id: 1, name: 'Erling Haaland', position: 'FWD' as const, team: 'Man City', price: 15.5, xP: 6.2,
+      // Highly owned -> low differential (6.2 * 0.25 = 1.55), despite being
+      // the xP leader -- this is the whole point of the stat.
+      ownership_pct: 75.0, differential: 1.55,
       breakdown: {
         appearance_pts: 1.8, goal_pts: 3.2, assist_pts: 0.1, cs_pts: 0, conceded_penalty: 0,
         card_pen_pts: -0.1, pen_save_pts: 0, save_pts: 0, defcon_pts: 0, bonus_pts: 1.2,
@@ -64,6 +67,9 @@ const MOCK_PLAYERS = {
     },
     {
       player_id: 2, name: 'Mohamed Salah', position: 'MID' as const, team: 'Liverpool', price: 13.0, xP: 5.8,
+      // Lightly owned -> high differential (5.8 * 0.9 = 5.22) -- the best
+      // pick of the three by this measure, despite ranking 2nd on raw xP.
+      ownership_pct: 10.0, differential: 5.22,
       breakdown: {
         appearance_pts: 1.8, goal_pts: 2.0, assist_pts: 0.8, cs_pts: 0.2, conceded_penalty: 0,
         card_pen_pts: 0, pen_save_pts: 0, save_pts: 0, defcon_pts: 0.3, bonus_pts: 0.7,
@@ -73,6 +79,9 @@ const MOCK_PLAYERS = {
     },
     {
       player_id: 3, name: 'Virgil van Dijk', position: 'DEF' as const, team: 'Liverpool', price: 6.5, xP: 4.1,
+      // No ownership data at all (e.g. pre-season) -- differential defaults
+      // to xP itself, and the column should show "—", not "null%" or a crash.
+      ownership_pct: null, differential: 4.1,
       breakdown: {
         appearance_pts: 1.8, goal_pts: 0.1, assist_pts: 0.05, cs_pts: 1.2, conceded_penalty: -0.2,
         card_pen_pts: -0.05, pen_save_pts: 0, save_pts: 0, defcon_pts: 0.3, bonus_pts: 0.8,
@@ -679,5 +688,52 @@ describe('PlayerScout', () => {
     // player of the three -- proves this is a genuinely independent sort
     // field, not just piggybacking on xP order.
     expect(rows[0]).toHaveTextContent('Virgil van Dijk')
+  })
+
+  it('Own % and Diff columns render, and missing ownership shows "—" rather than a crash', () => {
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+
+    const haalandRow = screen.getByText('Erling Haaland').closest('tr')!
+    expect(within(haalandRow).getByText('75.0%')).toBeInTheDocument()
+    expect(within(haalandRow).getByText('1.55')).toBeInTheDocument()
+
+    const vanDijkRow = screen.getByText('Virgil van Dijk').closest('tr')!
+    // Own % is cell index 8 (shirt, name, team, pos, price, xP, value,
+    // lastSeasonPts, ownership, ...) -- scoped by index since the FDR strip
+    // ALSO shows "—" when fixtures aren't mocked (as here), which would
+    // otherwise make a plain getByText('—') ambiguous.
+    const cells = within(vanDijkRow).getAllByRole('cell')
+    expect(cells[8]).toHaveTextContent('—') // no ownership data
+    expect(cells[9]).toHaveTextContent('4.10') // differential still shown, = his xP
+  })
+
+  it('sorting by Diff surfaces the best-VALUE pick, not just the highest-xP one -- the whole point of the stat', async () => {
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+
+    // Default: Haaland leads on raw xP despite being heavily owned (75%).
+    let rows = screen.getAllByRole('row').slice(1)
+    expect(rows[0]).toHaveTextContent('Erling Haaland')
+
+    await user.click(screen.getByRole('button', { name: /^diff/i }))
+    rows = screen.getAllByRole('row').slice(1)
+    // Salah (10% owned, diff 5.22) now leads -- Haaland (75% owned, diff
+    // 1.55) drops to last, despite having the highest raw xP of the three.
+    expect(rows[0]).toHaveTextContent('Mohamed Salah')
+    expect(rows[2]).toHaveTextContent('Erling Haaland')
+  })
+
+  it('sorting by Own % ranks by ownership -- missing ownership (van Dijk) sorts as 0%, i.e. last when descending', async () => {
+    vi.spyOn(hooks, 'usePlayers').mockReturnValue({ data: MOCK_PLAYERS, isLoading: false, isError: false } as never)
+    renderWithClient(<PlayerScout />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: /own %/i }))
+    const rows = screen.getAllByRole('row').slice(1)
+    expect(rows[0]).toHaveTextContent('Erling Haaland') // 75%
+    expect(rows[1]).toHaveTextContent('Mohamed Salah') // 10%
+    expect(rows[2]).toHaveTextContent('Virgil van Dijk') // no data -> treated as 0%
   })
 })

@@ -636,7 +636,7 @@ def list_players(
     def _fetch_raw_predictions():
         breakdown_cols_sql = ", ".join(f"b.{c}" for c in BREAKDOWN_COLS)
         sql = f"""SELECT p.player_id, p.name, p.position, t.name AS team, t.code AS team_code,
-                         ps.price_end AS price, mp.predicted_points AS xP, f.gw, {breakdown_cols_sql}
+                         ps.price_end AS price, ps.ownership_pct, mp.predicted_points AS xP, f.gw, {breakdown_cols_sql}
                   FROM model_predictions mp
                   JOIN players p ON mp.player_id = p.player_id
                   JOIN player_season ps ON ps.player_id = p.player_id AND ps.season_id = ?
@@ -676,8 +676,10 @@ def list_players(
 
     # Same double-gameweek-safe aggregation as optimise.py/squad.py -- sum every
     # fixture in the range for a player, both the headline xP and each component.
+    # ownership_pct joins the grouping keys (like price) -- it's a per-player
+    # constant across fixtures, not something to sum.
     sum_cols = ["xP"] + BREAKDOWN_COLS
-    df = raw_df.groupby(["player_id", "name", "position", "team", "team_code", "price"], as_index=False)[sum_cols].sum()
+    df = raw_df.groupby(["player_id", "name", "position", "team", "team_code", "price", "ownership_pct"], as_index=False, dropna=False)[sum_cols].sum()
 
     historic_by_player = _historic_by_player()
     last_season_stats_by_player = _last_season_stats_by_player()
@@ -691,6 +693,18 @@ def list_players(
     for row in df.to_dict(orient="records"):
         breakdown = {c: round(row.pop(c), 3) for c in BREAKDOWN_COLS}
         row["breakdown"] = breakdown
+        # Real ownership + differential value: FPL is a RELATIVE game (rank
+        # vs other managers), so a high-xP player everyone already owns
+        # gains you nothing over your rivals -- a similarly-good, LOW-owned
+        # pick is worth more strategically even at identical xP. Missing
+        # ownership (pre-season, or a brand-new signing not yet in
+        # player_season) defaults to treating them as 0% owned for this
+        # formula -- maximally "different" -- rather than dropping the
+        # differential entirely.
+        raw_ownership = row["ownership_pct"]
+        has_ownership = pd.notna(raw_ownership)
+        row["ownership_pct"] = round(raw_ownership, 1) if has_ownership else None
+        row["differential"] = round(row["xP"] * (1 - (raw_ownership if has_ownership else 0) / 100), 3)
         row["gameweeks"] = gw_by_player.get(row["player_id"], [])
         row["historic"] = historic_by_player.get(row["player_id"])
         last_season_stats = last_season_stats_by_player.get(row["player_id"])

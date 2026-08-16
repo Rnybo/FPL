@@ -29,8 +29,52 @@ def test_players_returns_real_data():
     data = resp.json()
     assert len(data["players"]) > 0
     first = data["players"][0]
-    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_total_points", "last_season_breakdown", "prob", "opponent_stats", "points_by_month", "points_vs_opponent_last_season"}
+    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_total_points", "last_season_breakdown", "prob", "opponent_stats", "points_by_month", "points_vs_opponent_last_season", "ownership_pct", "differential"}
     assert first["position"] in {"GK", "DEF", "MID", "FWD"}
+
+
+def test_players_ownership_and_differential_are_present_and_well_formed():
+    """ownership_pct is a real 0-100 percentage (or None if genuinely
+    missing), and differential = xP * (1 - ownership/100) exactly -- FPL is
+    a relative game, so a high-xP player everyone owns is worth less
+    strategically than an equally-good, low-owned pick (see players.py's
+    comment for the full rationale)."""
+    resp = client.get("/api/players")
+    players = resp.json()["players"]
+    checked_any = False
+    for p in players[:100]:
+        if p["ownership_pct"] is None:
+            assert p["differential"] == p["xP"]  # missing ownership treated as 0% owned
+            continue
+        checked_any = True
+        assert 0 <= p["ownership_pct"] <= 100
+        expected = round(p["xP"] * (1 - p["ownership_pct"] / 100), 3)
+        assert p["differential"] == pytest.approx(expected, abs=0.01)
+    assert checked_any, "no player in the sample had ownership_pct -- test wasn't exercised"
+
+
+def test_players_differential_is_lower_for_highly_owned_players_at_similar_xp():
+    """The whole point of the stat: among players with similar xP, a
+    heavily-owned one should show a NOTICEABLY lower differential than a
+    lightly-owned one -- confirms ownership is actually doing something,
+    not just carried through as a decorative extra field."""
+    resp = client.get("/api/players")
+    players = [p for p in resp.json()["players"] if p["ownership_pct"] is not None and p["xP"] > 0]
+    highly_owned = [p for p in players if p["ownership_pct"] >= 30]
+    lightly_owned = [p for p in players if p["ownership_pct"] <= 5]
+    assert highly_owned and lightly_owned, "sample didn't include both a highly- and lightly-owned player"
+    for p in highly_owned:
+        assert p["differential"] < p["xP"]  # meaningfully discounted
+    for p in lightly_owned:
+        assert p["differential"] == pytest.approx(p["xP"], abs=p["xP"] * 0.05 + 0.01)  # barely discounted
+
+
+def test_players_scout_can_sort_by_differential():
+    """Confirms it's a genuinely varying number across the pool (not a
+    constant that would make sorting by it a no-op)."""
+    resp = client.get("/api/players")
+    values = {p["differential"] for p in resp.json()["players"]}
+    assert len(values) > 10
 
 
 def test_players_prob_is_a_real_probability_and_correlates_with_the_points_it_explains():

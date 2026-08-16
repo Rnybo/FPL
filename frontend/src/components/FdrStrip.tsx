@@ -21,22 +21,53 @@ export function buildFdrByTeam(fixtures: Fixture[]): Record<string, number[]> {
   return byTeam
 }
 
+export interface TeamFixtureEntry {
+  gw: number
+  opponent: string
+  isHome: boolean
+  difficulty: number
+}
+
+/** Same per-team chronological ordering as buildFdrByTeam, but keeps the
+ * opponent/venue/gw alongside each difficulty -- backs the Fixture Swing
+ * page's richer per-cell tooltips ("GW5: vs Chelsea (A)"), which a bare
+ * difficulty number can't convey on its own. */
+export function buildTeamFixtureList(fixtures: Fixture[]): Record<string, TeamFixtureEntry[]> {
+  const byTeam: Record<string, TeamFixtureEntry[]> = {}
+  const sorted = [...fixtures].sort((a, b) => a.kickoff_time.localeCompare(b.kickoff_time))
+  for (const f of sorted) {
+    ;(byTeam[f.home_team] ??= []).push({ gw: f.gw, opponent: f.away_team, isHome: true, difficulty: f.home_difficulty })
+    ;(byTeam[f.away_team] ??= []).push({ gw: f.gw, opponent: f.home_team, isHome: false, difficulty: f.away_difficulty })
+  }
+  return byTeam
+}
+
 // Wraps into rows of `perRow` (default 8) rather than truncating -- shows
 // EVERY selected gameweek's difficulty, however many there are, e.g. GW1-16
 // selected renders as two rows of 8 (GW1-8, then GW9-16), not just the
-// first 8 with the rest silently dropped.
-export default function FdrStrip({ difficulties, perRow = 8 }: { difficulties: number[]; perRow?: number }) {
+// first 8 with the rest silently dropped. `labels`, if given, is a PARALLEL
+// array (same length/order as `difficulties`) used for each cell's tooltip
+// instead of the plain "FDR N" default -- Fixture Swing passes richer
+// "GW5: vs Chelsea (A)"-style labels here; Player Scout's per-player usage
+// doesn't need to (the player's own team is already obvious from context).
+export default function FdrStrip({ difficulties, perRow = 8, labels }: {
+  difficulties: number[]
+  perRow?: number
+  labels?: string[]
+}) {
   if (difficulties.length === 0) return <span className="text-xs text-slate-300">—</span>
   const rows: number[][] = []
+  const labelRows: (string | undefined)[][] = []
   for (let i = 0; i < difficulties.length; i += perRow) {
     rows.push(difficulties.slice(i, i + perRow))
+    if (labels) labelRows.push(labels.slice(i, i + perRow))
   }
   return (
     <div className="flex flex-col gap-0.5">
       {rows.map((row, r) => (
         <div key={r} className="flex gap-0.5">
           {row.map((d, i) => (
-            <div key={i} title={`FDR ${d}`} className={`w-4 h-4 rounded-sm ${FDR_COLORS[d] ?? 'bg-slate-200'}`} />
+            <div key={i} title={labels ? labelRows[r][i] : `FDR ${d}`} className={`w-4 h-4 rounded-sm ${FDR_COLORS[d] ?? 'bg-slate-200'}`} />
           ))}
         </div>
       ))}

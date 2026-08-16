@@ -105,10 +105,13 @@ if __name__ == "__main__":
 
         team_id = el["team"]
         price = el["now_cost"] / 10.0
+        # selected_by_percent is a STRING in the raw API (e.g. "34.5") --
+        # cast here so it's stored/queried as a real number downstream.
+        ownership_pct = float(el["selected_by_percent"])
         conn.execute(
-            "INSERT OR REPLACE INTO player_season (player_id, season_id, team_id, price_start, price_end) "
-            "VALUES (?, ?, ?, COALESCE((SELECT price_start FROM player_season WHERE player_id=? AND season_id=?), ?), ?)",
-            (pid, CURRENT_SEASON, team_id, pid, CURRENT_SEASON, price, price),
+            "INSERT OR REPLACE INTO player_season (player_id, season_id, team_id, price_start, price_end, ownership_pct) "
+            "VALUES (?, ?, ?, COALESCE((SELECT price_start FROM player_season WHERE player_id=? AND season_id=?), ?), ?, ?)",
+            (pid, CURRENT_SEASON, team_id, pid, CURRENT_SEASON, price, price, ownership_pct),
         )
         updated += 1
 

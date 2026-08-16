@@ -3,6 +3,7 @@ import PlayerScout from './pages/PlayerScout'
 import SquadBuilder from './pages/SquadBuilder'
 import MyTeam from './pages/MyTeam'
 import LeagueHub from './pages/LeagueHub'
+import FixtureSwing from './pages/FixtureSwing'
 import ComingSoon from './pages/ComingSoon'
 
 const NAV = [
@@ -10,7 +11,7 @@ const NAV = [
   { to: '/squad', label: 'Squad Builder' },
   { to: '/league', label: 'League Hub' },
   { to: '/team', label: 'My Team' },
-  { to: '/fixtures', label: 'Fixtures' },
+  { to: '/fixtures', label: 'Fixture Swing' },
   { to: '/model', label: 'Model Transparency' },
 ]
 
@@ -47,7 +48,7 @@ export default function App() {
         <Route path="/squad" element={<SquadBuilder />} />
         <Route path="/league" element={<LeagueHub />} />
         <Route path="/team" element={<MyTeam />} />
-        <Route path="/fixtures" element={<ComingSoon title="Fixtures" />} />
+        <Route path="/fixtures" element={<FixtureSwing />} />
         <Route path="/model" element={<ComingSoon title="Model Transparency" />} />
       </Routes>
     </div>

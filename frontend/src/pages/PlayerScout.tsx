@@ -12,7 +12,7 @@ const FDR_PER_ROW = 8 // wrap width for the FDR strip, not a fetch/lookahead lim
                         // than this wraps into multiple rows of FDR_PER_ROW each
 
 type Position = 'ALL' | Player['position']
-type SortField = 'xP' | 'price' | 'name' | 'valuePerPrice' | 'fdr' | 'lastSeasonPts' | keyof XpBreakdown | `gw:${number}`
+type SortField = 'xP' | 'price' | 'name' | 'valuePerPrice' | 'fdr' | 'lastSeasonPts' | 'ownership' | 'differential' | keyof XpBreakdown | `gw:${number}`
 type SortLevel = { field: SortField; dir: 'asc' | 'desc' }
 
 const BREAKDOWN_LABELS: Record<keyof XpBreakdown, string> = {
@@ -38,9 +38,10 @@ const COLUMN_KEYS: (keyof XpBreakdown)[] = ['goal_pts', 'assist_pts', 'cs_pts', 
 // depends on the selected range), so this is a function, not a static Record like before.
 function sortFieldLabel(field: SortField): string {
   if (field.startsWith('gw:')) return `GW${field.slice(3)}`
-  const labels: Record<'xP' | 'price' | 'name' | 'valuePerPrice' | 'fdr' | 'lastSeasonPts' | keyof XpBreakdown, string> = {
+  const labels: Record<'xP' | 'price' | 'name' | 'valuePerPrice' | 'fdr' | 'lastSeasonPts' | 'ownership' | 'differential' | keyof XpBreakdown, string> = {
     xP: 'xP', price: 'Price', name: 'Name', valuePerPrice: 'xP/£m', fdr: 'FDR',
-    lastSeasonPts: 'Total pts (last season)', ...BREAKDOWN_LABELS,
+    lastSeasonPts: 'Total pts (last season)', ownership: 'Own %', differential: 'Diff',
+    ...BREAKDOWN_LABELS,
   }
   return labels[field as keyof typeof labels]
 }
@@ -57,6 +58,8 @@ function fieldValue(p: Player, field: SortField, avgFdrByTeam: Record<string, nu
   if (field === 'valuePerPrice') return p.price > 0 ? p.xP / p.price : 0
   if (field === 'fdr') return avgFdrByTeam[p.team] ?? 3
   if (field === 'lastSeasonPts') return p.last_season_total_points ?? 0
+  if (field === 'ownership') return p.ownership_pct ?? 0
+  if (field === 'differential') return p.differential ?? p.xP
   if (field.startsWith('gw:')) {
     const gw = Number(field.slice(3))
     return p.gameweeks?.find((g) => g.gw === gw)?.xP ?? 0
@@ -150,7 +153,7 @@ export default function PlayerScout() {
     for (let gw = gwStart; gw <= gwEnd; gw++) opts.push(`gw:${gw}` as SortField)
     return opts
   }, [gwStart, gwEnd])
-  const allSortFields = ['xP', 'price', 'name', 'valuePerPrice', 'fdr', 'lastSeasonPts', ...COLUMN_KEYS, ...gwOptions] as SortField[]
+  const allSortFields = ['xP', 'price', 'name', 'valuePerPrice', 'fdr', 'lastSeasonPts', 'ownership', 'differential', ...COLUMN_KEYS, ...gwOptions] as SortField[]
 
   // Clicking a column header:
   // - If it's a genuinely NEW sort dimension (not currently active at any
@@ -277,7 +280,7 @@ export default function PlayerScout() {
             <span className="text-xs text-slate-400">{i + 1}.</span>
             <select value={level.field} onChange={(e) => updateSortLevel(i, { field: e.target.value as SortField })}
               className="text-xs bg-transparent">
-              {(['xP', 'price', 'name', 'valuePerPrice', 'fdr', 'lastSeasonPts', ...COLUMN_KEYS] as SortField[]).map((f) => (
+              {(['xP', 'price', 'name', 'valuePerPrice', 'fdr', 'lastSeasonPts', 'ownership', 'differential', ...COLUMN_KEYS] as SortField[]).map((f) => (
                 <option key={f} value={f}>{sortFieldLabel(f)}</option>
               ))}
               {gwOptions.length > 0 && (
@@ -329,6 +332,12 @@ export default function PlayerScout() {
             <SortableHeader field="xP" label="xP" sortLevels={sortLevels} onClick={sortByColumn} align="right" emphasize />
             <SortableHeader field="valuePerPrice" label="xP/£m" sortLevels={sortLevels} onClick={sortByColumn} align="right" />
             <SortableHeader field="lastSeasonPts" label="Total pts (last season)" sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
+            {/* Ownership + differential -- FPL is a relative game (rank vs
+                other managers), so these sit right after the "how good is
+                this pick" cluster: a high-xP player everyone owns is worth
+                less strategically than an equally-good, low-owned one. */}
+            <SortableHeader field="ownership" label="Own %" sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
+            <SortableHeader field="differential" label="Diff" sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
             <SortableHeader field="fdr" label={`GW${gwStart}${gwEnd !== gwStart ? `-${gwEnd}` : ''} (FDR)`} sortLevels={sortLevels} onClick={sortByColumn} align="left" />
             {COLUMN_KEYS.map((key) => (
               <SortableHeader key={key} field={key} label={BREAKDOWN_LABELS[key]} sortLevels={sortLevels} onClick={sortByColumn} align="right" muted />
@@ -422,6 +431,12 @@ function PlayerRow({ player, fdr, onClick, index }: {
       </td>
       <td className="py-2 pr-3 text-right text-slate-500">
         {player.last_season_total_points ?? 0}
+      </td>
+      <td className="py-2 pr-3 text-right text-slate-500">
+        {player.ownership_pct != null ? `${player.ownership_pct.toFixed(1)}%` : '—'}
+      </td>
+      <td className="py-2 pr-3 text-right text-slate-500">
+        {(player.differential ?? player.xP).toFixed(2)}
       </td>
       <td className="py-2 pr-3"><FdrStrip difficulties={fdr} perRow={FDR_PER_ROW} /></td>
       {COLUMN_KEYS.map((key) => {

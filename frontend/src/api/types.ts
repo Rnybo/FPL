@@ -129,6 +129,14 @@ export interface Player {
   team_code?: number
   price: number
   xP: number
+  // Real ownership % and differential value (xP * (1 - ownership/100)) --
+  // FPL is a relative game (rank vs other managers), so a high-xP player
+  // everyone already owns gains you nothing over your rivals; a similarly-
+  // good, low-owned pick is worth more strategically at the same xP.
+  // ownership_pct is null only when genuinely missing (e.g. pre-season) --
+  // differential still gets computed treating that as 0% owned.
+  ownership_pct?: number | null
+  differential?: number
   breakdown?: XpBreakdown
   gameweeks?: GameweekXp[]
   historic?: HistoricStats | null
