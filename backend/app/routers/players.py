@@ -586,6 +586,28 @@ def _points_vs_opponent_last_season(gw_start: int | None, gw_end: int | None) ->
     return _cached(("points_vs_opp", gw_start, gw_end), compute)
 
 
+def warm_players_cache():
+    """Pre-computes every gw-window-INDEPENDENT analysis once, so the FIRST
+    real request after a cold start (container restart/deploy) doesn't have
+    to sit through all of it -- see app/main.py's lifespan, which runs this
+    in a background thread on startup. Window-DEPENDENT results (this
+    window's own predictions, outcome probabilities, points-vs-opponent)
+    aren't warmed here since there's no single "the" window to warm ahead
+    of time -- those still compute on first use per window, same as
+    before, just fast now since they're no longer ALSO redoing all this
+    window-independent work on every single request.
+    Safe to run concurrently with a real request: _cached's RLock means
+    whichever gets to a given piece of analysis first computes it, the
+    other reuses the result -- no duplicate work, no crash.
+    """
+    _position_by_player()
+    _historic_by_player()
+    _last_season_stats_by_player()
+    _last_season_breakdown()
+    _opponent_stats()
+    _monthly_points_per_game()
+
+
 @router.get("")
 def list_players(
     gw_start: int | None = Query(None, description="First gameweek to include (inclusive)"),
