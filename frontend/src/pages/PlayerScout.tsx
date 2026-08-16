@@ -4,7 +4,7 @@ import { usePlayers, useFixtures } from '../api/hooks'
 import PlayerShirt from '../components/PlayerShirt'
 import FdrStrip, { buildFdrByTeam } from '../components/FdrStrip'
 import PlayerDetailModal from '../components/PlayerDetailModal'
-import type { Player, XpBreakdown } from '../api/types'
+import type { Player, XpBreakdown, OutcomeProbabilities } from '../api/types'
 
 const FDR_LOOKAHEAD = 8 // gameweeks of fixture difficulty to show, independent of
                           // the xP optimization window -- lets you see a team's
@@ -421,7 +421,12 @@ function PlayerRow({ player, fdr, onClick, index }: {
       <td className="py-2 pr-3"><FdrStrip difficulties={fdr} /></td>
       {COLUMN_KEYS.map((key) => {
         const value = player.breakdown?.[key] ?? 0
-        const prob = player.prob?.[key]
+        // COLUMN_KEYS is always exactly the 4 keys OutcomeProbabilities has
+        // (goal_pts/assist_pts/cs_pts/defcon_pts) -- a subset of the full
+        // 10-key XpBreakdown -- so this cast is safe, just not something
+        // plain structural typing can verify on its own from `key`'s wider
+        // (keyof XpBreakdown) type.
+        const prob = player.prob?.[key as keyof OutcomeProbabilities]
         return (
           <td key={key} className={`py-2 pr-3 text-right ${value < 0 ? 'text-red-600' : 'text-slate-400'}`}>
             {value.toFixed(2)}
