@@ -10,6 +10,7 @@ gameweek boundaries, so they run less frequently.
 """
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -44,29 +45,51 @@ def _run_script(name: str):
         # thread, not a separate process, unlike the script subprocess above)
         # -- importing here (not at module top) avoids a circular import
         # between scheduler.py and the routers package at startup.
-        from app.routers.players import invalidate_players_cache
+        #
+        # Re-warms IMMEDIATELY after invalidating, in this same background
+        # thread -- not just clearing and leaving it cold for whichever real
+        # visitor's request happens to hit next. That was a real gap: a
+        # cleared-but-not-yet-rewarmed cache looked identical to a genuinely
+        # slow one from the outside ("player loading still takes a long
+        # time"), and since these jobs fire fairly often, a cold cache could
+        # persist for a real user far more often than the rare deploy-restart
+        # case warm_players_cache() alone was written for.
+        from app.routers.players import invalidate_players_cache, warm_players_cache
         invalidate_players_cache()
-        print(f"[scheduler] {name}: players cache invalidated")
+        print(f"[scheduler] {name}: players cache invalidated, re-warming...")
+        warm_players_cache()
+        print(f"[scheduler] {name}: players cache re-warmed")
 
 
 def start():
+    # next_run_time=now+interval on every job below -- APScheduler's default
+    # otherwise fires an interval job's FIRST execution IMMEDIATELY on
+    # scheduler.start(), not after waiting the stated interval (a known
+    # APScheduler gotcha). Left at the default, EVERY container restart/deploy
+    # kicked off all 5 scripts at once, including the cache-invalidating ones
+    # -- racing against warm_players_cache()'s own startup warm-up and often
+    # winning, leaving a freshly-restarted server's cache cold again within
+    # minutes even with no genuine new data to fetch. Explicit next_run_time
+    # defers the first real run to a sensible time after startup instead.
+    now = datetime.now()
+
     # Cheap, safe to run often -- news changes fast, especially near deadlines
     scheduler.add_job(lambda: _run_script("fetch_live_team_news.py"),
-                       "interval", hours=6, id="live_team_news")
+                       "interval", hours=6, next_run_time=now + timedelta(hours=6), id="live_team_news")
 
     # Roster/fixtures change rarely mid-week; daily is plenty
     scheduler.add_job(lambda: _run_script("fetch_current_roster.py"),
-                       "interval", hours=24, id="current_roster")
+                       "interval", hours=24, next_run_time=now + timedelta(hours=24), id="current_roster")
     scheduler.add_job(lambda: _run_script("fetch_upcoming_fixtures.py"),
-                       "interval", hours=24, id="upcoming_fixtures")
+                       "interval", hours=24, next_run_time=now + timedelta(hours=24), id="upcoming_fixtures")
 
     # Heavier: pick up newly-finished gameweeks, then regenerate predictions.
     # Runs a few times a day -- fetch_live_gameweek_stats.py is idempotent
     # (only processes genuinely new finished gameweeks), so extra runs are safe.
     scheduler.add_job(lambda: _run_script("fetch_live_gameweek_stats.py"),
-                       "interval", hours=6, id="live_gameweek_stats")
+                       "interval", hours=6, next_run_time=now + timedelta(hours=6), id="live_gameweek_stats")
     scheduler.add_job(lambda: _run_script("predict_upcoming.py"),
-                       "interval", hours=6, id="predict_upcoming")
+                       "interval", hours=6, next_run_time=now + timedelta(hours=6), id="predict_upcoming")
 
     scheduler.start()
     print("[scheduler] started -- see docs/live-refresh-runbook.md for the cadence rationale")
