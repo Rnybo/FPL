@@ -316,7 +316,7 @@ describe('FixtureSwing', () => {
     expect(within(dialog).getByText('2/2')).toBeInTheDocument()
   })
 
-  it('the modal highlights the leg matching the fixture\'s venue, and shows "-" for a promoted opponent with no history', async () => {
+  it('the modal shows separate single-number cells for GF and GA (never combined), and highlights the leg matching the fixture\'s venue', async () => {
     vi.spyOn(hooks, 'useFixtures').mockReturnValue({ data: MOCK_FIXTURES, isLoading: false, isError: false } as never)
     renderWithClient(<FixtureSwing />)
     const user = userEvent.setup()
@@ -324,16 +324,20 @@ describe('FixtureSwing', () => {
     await user.click(screen.getByText('Easy FC'))
     const dialog = screen.getByRole('dialog')
 
-    // GW2 vs Filler United, home -- "3.00-1.00 (1g)" (home leg) should be
-    // highlighted, not the away leg ("2.00-2.00 (1g)").
+    // GW2 vs Filler United, home -- home GF (3.00) and home GA (1.00) should
+    // each be their OWN highlighted cell, not combined into "3.00-1.00".
     const gw2Row = within(dialog).getByText('2').closest('tr')!
-    const homeCell = within(gw2Row).getByText(/3\.00-1\.00/)
-    expect(homeCell.className).toMatch(/bg-emerald-50/)
-    const awayCell = within(gw2Row).getByText(/2\.00-2\.00/)
-    expect(awayCell.className).not.toMatch(/bg-emerald-50/)
+    expect(within(gw2Row).queryByText(/3\.00-1\.00/)).not.toBeInTheDocument() // never combined
+    const homeGfCell = within(gw2Row).getByText('3.00')
+    const homeGaCell = within(gw2Row).getByText('1.00')
+    expect(homeGfCell.className).toMatch(/bg-emerald-50/)
+    expect(homeGaCell.className).toMatch(/bg-emerald-50/)
+    // Away leg (2.00/2.00) is NOT highlighted.
+    const awayCells = within(gw2Row).getAllByText('2.00')
+    for (const cell of awayCells) expect(cell.className).not.toMatch(/bg-emerald-50/)
 
-    // GW5 vs Promoted FC -- no history at all -- both legs show "-".
+    // GW5 vs Promoted FC -- no history at all -- all four cells show "-".
     const gw5Row = within(dialog).getByText('Promoted FC').closest('tr')!
-    expect(within(gw5Row).getAllByText('-')).toHaveLength(2)
+    expect(within(gw5Row).getAllByText('-')).toHaveLength(4)
   })
 })

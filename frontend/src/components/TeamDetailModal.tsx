@@ -146,14 +146,15 @@ function OpponentTable({ title, entries, tone }: { title: string; entries: TeamO
 }
 
 // For each fixture in the CURRENTLY SELECTED gameweek range (Team Scout's
-// From/To GW inputs), AVERAGE goals scored/conceded (shown as "GF-GA")
+// From/To GW inputs), AVERAGE goals scored and AVERAGE goals conceded
 // against that SAME opponent across the last 3 complete seasons -- home
-// leg and away leg reported separately, since a club meets each opponent
-// once at each venue per season. The venue matching THIS fixture is
-// highlighted (emerald) -- "the same fixture." A leg with zero meetings at
-// all across that span (promoted opponent) shows "-". Game count in
-// parentheses shows how many of the (up to) 3 seasons the average is
-// actually built from.
+// leg and away leg reported separately (a club meets each opponent once at
+// each venue per season), and scored/conceded as their OWN separate
+// columns rather than combined into one string -- each cell is always a
+// single number. The venue pair matching THIS fixture is highlighted
+// (emerald) -- "the same fixture." "-" means zero meetings at that venue
+// across the last 3 seasons (e.g. a promoted opponent). Hover a cell for
+// how many of the 3 seasons it's actually built from.
 //
 // Paginated 5 rows at a time, same pattern as Player Scout's equivalent
 // table -- a wide GW range would otherwise dump too many rows in here.
@@ -186,38 +187,56 @@ function GoalsVsOpponentTable({ entries }: { entries: TeamGoalsVsOpponentEntry[]
       ) : (
         <>
           <p className="text-[11px] text-slate-400 mb-2">
-            Average goals scored-conceded (as "GF-GA") against that same opponent over the last 3 seasons --
-            "(Ng)" is how many of those seasons they've actually met at that venue. Highlighted cell is the
-            leg matching this fixture's venue. "-" means they never met at that venue in the last 3 seasons.
+            Average goals scored/conceded against that same opponent over the last 3 seasons. Highlighted
+            pair is the leg matching this fixture's venue. "-" means they never met at that venue in the
+            last 3 seasons -- hover a number for how many seasons it's built from.
           </p>
-          <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden min-w-[520px]">
             <thead>
               <tr className="bg-slate-100 text-left text-slate-500">
-                <th className="px-3 py-1.5 font-semibold">GW</th>
-                <th className="px-3 py-1.5 font-semibold">Opponent</th>
-                <th className="px-3 py-1.5 font-semibold">Venue</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Home (avg, last 3 seasons)</th>
-                <th className="px-3 py-1.5 text-right font-semibold">Away (avg, last 3 seasons)</th>
+                <th className="px-3 py-1.5 font-semibold" rowSpan={2}>GW</th>
+                <th className="px-3 py-1.5 font-semibold" rowSpan={2}>Opponent</th>
+                <th className="px-3 py-1.5 font-semibold" rowSpan={2}>Venue</th>
+                <th className="px-3 py-1.5 text-center font-semibold" colSpan={2}>Home (avg, last 3 seasons)</th>
+                <th className="px-3 py-1.5 text-center font-semibold" colSpan={2}>Away (avg, last 3 seasons)</th>
+              </tr>
+              <tr className="bg-slate-100 text-slate-500">
+                <th className="px-3 py-1 text-right font-medium text-[11px]">GF</th>
+                <th className="px-3 py-1 text-right font-medium text-[11px]">GA</th>
+                <th className="px-3 py-1 text-right font-medium text-[11px]">GF</th>
+                <th className="px-3 py-1 text-right font-medium text-[11px]">GA</th>
               </tr>
             </thead>
             <tbody>
-              {shown.map((e, i) => (
-                <tr key={`${e.gw}-${e.opponent}`} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
-                  <td className="px-3 py-1.5 text-slate-500">{e.gw}</td>
-                  <td className="px-3 py-1.5 text-slate-800">{e.opponent}</td>
-                  <td className="px-3 py-1.5 text-slate-500">{e.venue_now}</td>
-                  <td className={`px-3 py-1.5 text-right ${e.venue_now === 'H' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
-                    {e.home_gf != null && e.home_ga != null
-                      ? `${e.home_gf.toFixed(2)}-${e.home_ga.toFixed(2)} (${e.home_games}g)` : '-'}
-                  </td>
-                  <td className={`px-3 py-1.5 text-right ${e.venue_now === 'A' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'}`}>
-                    {e.away_gf != null && e.away_ga != null
-                      ? `${e.away_gf.toFixed(2)}-${e.away_ga.toFixed(2)} (${e.away_games}g)` : '-'}
-                  </td>
-                </tr>
-              ))}
+              {shown.map((e, i) => {
+                const homeCls = e.venue_now === 'H' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'
+                const awayCls = e.venue_now === 'A' ? 'bg-emerald-50 font-bold text-emerald-700' : 'text-slate-600'
+                const homeTitle = `${e.home_games} of the last 3 seasons`
+                const awayTitle = `${e.away_games} of the last 3 seasons`
+                return (
+                  <tr key={`${e.gw}-${e.opponent}`} className={`border-t border-slate-100 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
+                    <td className="px-3 py-1.5 text-slate-500">{e.gw}</td>
+                    <td className="px-3 py-1.5 text-slate-800">{e.opponent}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{e.venue_now}</td>
+                    <td className={`px-3 py-1.5 text-right ${homeCls}`} title={homeTitle}>
+                      {e.home_gf != null ? e.home_gf.toFixed(2) : '-'}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right ${homeCls}`} title={homeTitle}>
+                      {e.home_ga != null ? e.home_ga.toFixed(2) : '-'}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right ${awayCls}`} title={awayTitle}>
+                      {e.away_gf != null ? e.away_gf.toFixed(2) : '-'}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right ${awayCls}`} title={awayTitle}>
+                      {e.away_ga != null ? e.away_ga.toFixed(2) : '-'}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </div>
