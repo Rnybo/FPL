@@ -25,7 +25,12 @@ CURRENT_SEASON = "2026-27"
 # CORS: the Vercel-hosted frontend's origin(s). Reads from ALLOWED_ORIGINS env var
 # (comma-separated) if set -- e.g. "https://fpl-xyz.vercel.app" in production --
 # falling back to localhost dev ports so nothing changes for local development.
+# Vite auto-increments past 5173 if that port's already taken by another
+# project on the same machine (a real, recurring case on a dev box running
+# several things at once) -- covering a small range here avoids a CORS
+# failure just because Vite picked 5174/5175 instead of the default.
 _origins_env = os.environ.get("ALLOWED_ORIGINS")
 ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",")] if _origins_env else [
-    "http://localhost:5173", "http://localhost:3000"
+    "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
+    "http://localhost:5176", "http://localhost:3000",
 ]
