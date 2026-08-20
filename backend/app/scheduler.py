@@ -22,11 +22,23 @@ scheduler = BackgroundScheduler()
 # Which scripts actually change data that /api/players' in-process cache is
 # built from (see players.py's _cache/invalidate_players_cache) -- roster
 # (prices, team assignments), fixtures (opponents, upcoming schedule), live
-# gameweek stats, and predictions all feed it; only the team-news job
-# doesn't touch anything players.py queries at all.
+# gameweek stats, and predictions all feed it. fetch_live_team_news.py used
+# to be the one job that didn't -- now it does too, since /api/players
+# surfaces injured/suspended status (see players.py's _status_by_player) --
+# without this, an injury reported mid-week wouldn't show up until the next
+# unrelated cache invalidation happened to fire.
 _INVALIDATES_PLAYERS_CACHE = {
     "fetch_current_roster.py", "fetch_upcoming_fixtures.py",
-    "fetch_live_gameweek_stats.py", "predict_upcoming.py",
+    "fetch_live_gameweek_stats.py", "predict_upcoming.py", "fetch_live_team_news.py",
+}
+
+# Subset of the above that also feeds /api/performance's cache (Player
+# Performance tab) -- ownership/price (roster), actual gameweek stats
+# (goals/xG/ICT/etc.), and now live status (same reasoning as
+# _INVALIDATES_PLAYERS_CACHE above) -- but NOT fixtures or predictions,
+# since performance.py never reads either of those tables.
+_INVALIDATES_PERFORMANCE_CACHE = {
+    "fetch_current_roster.py", "fetch_live_gameweek_stats.py", "fetch_live_team_news.py",
 }
 
 
@@ -59,6 +71,11 @@ def _run_script(name: str):
         print(f"[scheduler] {name}: players cache invalidated, re-warming...")
         warm_players_cache()
         print(f"[scheduler] {name}: players cache re-warmed")
+    if result.returncode == 0 and name in _INVALIDATES_PERFORMANCE_CACHE:
+        from app.routers.performance import invalidate_performance_cache, warm_performance_cache
+        invalidate_performance_cache()
+        warm_performance_cache()
+        print(f"[scheduler] {name}: performance cache invalidated + re-warmed")
 
 
 def start():
@@ -88,8 +105,14 @@ def start():
     # (only processes genuinely new finished gameweeks), so extra runs are safe.
     scheduler.add_job(lambda: _run_script("fetch_live_gameweek_stats.py"),
                        "interval", hours=6, next_run_time=now + timedelta(hours=6), id="live_gameweek_stats")
+    # Dropped from 6h to 24h (2026-08-20): full retrain of all 5 layers is the
+    # heaviest job in the schedule and was found to be the primary trigger of
+    # repeated OOM kills on the e2-micro VM (see docs/DEPLOYMENT.md). New
+    # finished gameweeks land roughly weekly, so 4x/day bought negligible
+    # freshness for real memory risk. fetch_live_gameweek_stats.py (which
+    # feeds it) stays at 6h since it's cheap and idempotent.
     scheduler.add_job(lambda: _run_script("predict_upcoming.py"),
-                       "interval", hours=6, next_run_time=now + timedelta(hours=6), id="predict_upcoming")
+                       "interval", hours=24, next_run_time=now + timedelta(hours=24), id="predict_upcoming")
 
     scheduler.start()
     print("[scheduler] started -- see docs/live-refresh-runbook.md for the cadence rationale")
