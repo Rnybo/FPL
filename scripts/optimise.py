@@ -280,11 +280,187 @@ def suggest_transfers(squad: pd.DataFrame, candidates: pd.DataFrame, bank: float
             if gain >= min_gain:
                 suggestions.append(dict(
                     out_name=out_player["name"], in_name=in_player["name"],
+                    # ids alongside names -- matching back to a squad/candidate row by
+                    # name alone is exactly the bug pattern this project already hit
+                    # once (accent-encoding duplicate-name splits, see docs/GOTCHAS.md).
+                    # Additive columns only -- existing callers reading out_name/in_name
+                    # are unaffected.
+                    out_player_id=out_player["player_id"], in_player_id=in_player["player_id"],
                     position=out_player["position"], gain=gain,
                     cost_change=in_player["price"] - out_player["price"],
                 ))
     return pd.DataFrame(suggestions).sort_values("gain", ascending=False).head(max_suggestions) \
-        if suggestions else pd.DataFrame(columns=["out_name", "in_name", "position", "gain", "cost_change"])
+        if suggestions else pd.DataFrame(
+            columns=["out_name", "in_name", "out_player_id", "in_player_id", "position", "gain", "cost_change"]
+        )
+
+
+# Current FPL rule (2024/25+): +1 free transfer per gameweek, banked unused
+# up to this cap. Matches user's confirmed choice for plan_horizon below.
+MAX_BANKED_FREE_TRANSFERS = 5
+# Same convention/values as squad.py's LOOKAHEAD_WEEKS/LOOKAHEAD_WEIGHT --
+# duplicated here rather than imported cross-router/module (see this
+# project's own "small duplication over shared helpers" pattern).
+PLAN_LOOKAHEAD_WEEKS = 3
+PLAN_LOOKAHEAD_WEIGHT = 0.3
+
+
+def plan_horizon(squad: pd.DataFrame, candidates: pd.DataFrame, per_gw_xp: pd.DataFrame,
+                  gameweeks: list[int], bank: float, free_transfers: int = 1,
+                  lookahead_weeks: int = PLAN_LOOKAHEAD_WEEKS, lookahead_weight: float = PLAN_LOOKAHEAD_WEIGHT,
+                  min_gain: float = 2.0, max_per_club: int = MAX_PER_CLUB,
+                  max_banked_transfers: int = MAX_BANKED_FREE_TRANSFERS,
+                  allow_hits: bool = False, hit_cost: float = 4.0, max_hits_per_gw: int = 2,
+                  min_hold_weeks: int = 2) -> list[dict]:
+    """A round-by-round game plan across a multi-gameweek horizon: for each
+    gameweek, decide transfers (if worth it) and pick that week's best
+    lineup/captain from whatever squad exists AFTER those transfers. GREEDY,
+    round-by-round -- NOT a joint multi-period optimization (matches this
+    module's own existing honesty standard: suggest_transfers is greedy too,
+    not claimed exact for multi-transfer combinations).
+
+    Free transfers are always used first. If allow_hits, additional
+    transfers beyond the free ones are taken as real -hit_cost point hits
+    (matches the actual FPL rule: -4 per transfer beyond your free ones),
+    but only when the lookahead-scored gain clears min_gain + hit_cost --
+    i.e. the hit has to pay for itself, not just the transfer. Hits are
+    capped at max_hits_per_gw per round so the planner can't recommend
+    "take 5 hits this week" chasing marginal lookahead noise.
+
+    squad: current 15-man squad -- static columns (player_id, name, position,
+        team, price) plus optionally selling_price (real transfer economics,
+        see team.py's own reasoning -- defaults to price if absent).
+    candidates: every other player, same static columns, CURRENT price (what
+        buying them would cost).
+    per_gw_xp: long frame (player_id, gw, xP) covering every player in squad
+        + candidates, for every gw in `gameweeks` PLUS up to lookahead_weeks
+        past the final one (needed to score the last round's transfers
+        fairly -- without a tail, the last gameweek would look like nothing
+        is ever worth buying for the future because there IS no future left
+        in the data).
+    gameweeks: sorted list of gameweek numbers to plan, e.g. [4, 5, 6, 7, 8].
+    bank, free_transfers: starting state.
+    min_hold_weeks: a player bought DURING this plan can't be sold again for
+        at least this many gameweeks (including the one they were bought
+        for). Without this, the greedy per-round re-scoring can thrash --
+        buy a player one week, sell them the next because that week's
+        lookahead window shifted and briefly favours someone else, then buy
+        them back again a couple of rounds later. No real manager would
+        spend transfers reversing their own decision like that, and it's
+        pure noise from the lookahead window sliding, not a genuine
+        long-term upgrade -- a real, documented judgment call, same honesty
+        standard as LOOKAHEAD_WEEKS/WEIGHT elsewhere in this pipeline.
+        Players already in the squad at the START of the plan are never
+        restricted -- only players THIS function buys.
+
+    Returns a list of one dict per gameweek (in order):
+        gameweek, formation, starters, bench, captain, vice_captain,
+        transfers_in, transfers_out (player_id lists), transfers_in_names,
+        transfers_out_names, hits_taken, free_transfers_after, bank_after,
+        expected_points, expected_points_with_captain (BEFORE any hit
+        deduction -- the raw lineup score), expected_points_after_hits,
+        expected_points_with_captain_after_hits (what you'd actually bank
+        that gameweek once -hit_cost per hit is subtracted). The last
+        `hits_taken` entries of transfers_in/transfers_out are the paid
+        ones -- everything before that was free.
+    """
+    squad = squad.copy()
+    if "selling_price" not in squad.columns:
+        squad["selling_price"] = squad["price"]
+    candidates = candidates[~candidates["player_id"].isin(squad["player_id"])].copy()
+    held_since: dict[int, int] = {}  # player_id -> gw bought, ONLY for players this plan itself bought
+
+    plan = []
+    for gw in gameweeks:
+        gw_xp = per_gw_xp.loc[per_gw_xp["gw"] == gw].set_index("player_id")["xP"]
+        lookahead_xp = per_gw_xp.loc[
+            (per_gw_xp["gw"] > gw) & (per_gw_xp["gw"] <= gw + lookahead_weeks)
+        ].groupby("player_id")["xP"].sum()
+
+        def _scored(df):
+            df = df.copy()
+            df["xP"] = df["player_id"].map(gw_xp).fillna(0.0)
+            df["selection_score"] = df["xP"] + lookahead_weight * df["player_id"].map(lookahead_xp).fillna(0.0)
+            return df
+
+        working_squad = _scored(squad)
+        candidate_pool = _scored(candidates)
+
+        transfers_in_ids, transfers_out_ids = [], []
+        transfers_in_names, transfers_out_names = [], []
+        free_remaining = free_transfers
+        hits_taken = 0
+        # One transfer at a time (max_suggestions=1), applied and re-scored
+        # before considering the next -- suggest_transfers alone doesn't
+        # account for two simultaneous suggestions spending the same bank
+        # or breaching max_per_club together, so this loop is what actually
+        # enforces that across multiple transfers in the same gameweek.
+        while True:
+            if free_remaining > 0:
+                threshold = min_gain
+            elif allow_hits and hits_taken < max_hits_per_gw:
+                threshold = min_gain + hit_cost  # the hit has to pay for itself
+            else:
+                break
+
+            squad_for_transfers = working_squad.drop(columns=["price"]).rename(columns={"selling_price": "price"})
+            # Ask for every possible upgrade (one per outgoing squad member,
+            # at most len(squad)), not just the single best -- the single
+            # best might be a currently-protected (too-recently-bought)
+            # player, and we need the next-best real option instead of
+            # giving up entirely.
+            suggestions = suggest_transfers(
+                squad_for_transfers, candidate_pool, bank,
+                score_col="selection_score", min_gain=threshold,
+                max_per_club=max_per_club, max_suggestions=len(squad_for_transfers),
+            )
+            protected_ids = {pid for pid, since_gw in held_since.items() if gw - since_gw < min_hold_weeks}
+            if protected_ids and not suggestions.empty:
+                suggestions = suggestions[~suggestions["out_player_id"].isin(protected_ids)]
+            if suggestions.empty:
+                break
+            row = suggestions.iloc[0]
+            bank -= row["cost_change"]
+            in_row = candidate_pool.loc[candidate_pool["player_id"] == row["in_player_id"]].iloc[0].to_dict()
+            in_row["selling_price"] = in_row["price"]
+            working_squad = pd.concat([
+                working_squad.loc[working_squad["player_id"] != row["out_player_id"]],
+                pd.DataFrame([in_row]),
+            ], ignore_index=True)
+            candidate_pool = candidate_pool.loc[candidate_pool["player_id"] != row["in_player_id"]]
+            transfers_out_ids.append(int(row["out_player_id"]))
+            transfers_in_ids.append(int(row["in_player_id"]))
+            transfers_out_names.append(row["out_name"])
+            transfers_in_names.append(row["in_name"])
+            held_since.pop(int(row["out_player_id"]), None)
+            held_since[int(row["in_player_id"])] = gw
+            if free_remaining > 0:
+                free_remaining -= 1
+            else:
+                hits_taken += 1
+
+        lineup = best_lineup(working_squad, score_col="xP")
+        free_transfers_after = min(max_banked_transfers, free_remaining + 1)
+        hit_points = hits_taken * hit_cost
+
+        plan.append(dict(
+            gameweek=gw, formation=lineup["formation"],
+            starters=lineup["starters"], bench=lineup["bench"],
+            captain=lineup["captain"], vice_captain=lineup["vice_captain"],
+            transfers_in=transfers_in_ids, transfers_out=transfers_out_ids,
+            transfers_in_names=transfers_in_names, transfers_out_names=transfers_out_names,
+            hits_taken=hits_taken,
+            free_transfers_after=free_transfers_after, bank_after=bank,
+            expected_points=lineup["expected_points"],
+            expected_points_with_captain=lineup["expected_points_with_captain"],
+            expected_points_after_hits=lineup["expected_points"] - hit_points,
+            expected_points_with_captain_after_hits=lineup["expected_points_with_captain"] - hit_points,
+        ))
+
+        squad = working_squad.drop(columns=["xP", "selection_score"])
+        free_transfers = free_transfers_after
+
+    return plan
 
 
 if __name__ == "__main__":

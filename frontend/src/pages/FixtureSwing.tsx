@@ -27,6 +27,7 @@ export default function FixtureSwing() {
   const recentForm = data?.recent_form ?? {}
   const lastSeasonTeamStats = data?.last_season_team_stats ?? {}
   const goalsVsOpponent = data?.goals_vs_opponent ?? {}
+  const setPieceTakers = data?.set_piece_takers ?? {}
 
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null)
 
@@ -277,6 +278,7 @@ export default function FixtureSwing() {
           recentForm={recentForm[selectedTeam]}
           lastSeasonStats={lastSeasonTeamStats[selectedTeam]}
           goalsVsOpponent={goalsVsOpponent[selectedTeam] ?? []}
+          setPieceTakers={setPieceTakers[selectedTeam]}
           onClose={() => setSelectedTeam(null)}
         />
       )}

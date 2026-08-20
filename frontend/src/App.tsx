@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import PlayerScout from './pages/PlayerScout'
+import PlayerPerformance from './pages/PlayerPerformance'
 import SquadBuilder from './pages/SquadBuilder'
 import MyTeam from './pages/MyTeam'
 import LeagueHub from './pages/LeagueHub'
@@ -8,6 +9,7 @@ import ComingSoon from './pages/ComingSoon'
 
 const NAV = [
   { to: '/', label: 'Player Scout' },
+  { to: '/performance', label: 'Player Performance' },
   { to: '/fixtures', label: 'Team Scout' },
   { to: '/squad', label: 'Fantasy Team Builder' },
   { to: '/league', label: 'League Hub' },
@@ -45,6 +47,7 @@ export default function App() {
       <Nav />
       <Routes>
         <Route path="/" element={<PlayerScout />} />
+        <Route path="/performance" element={<PlayerPerformance />} />
         <Route path="/squad" element={<SquadBuilder />} />
         <Route path="/league" element={<LeagueHub />} />
         <Route path="/team" element={<MyTeam />} />

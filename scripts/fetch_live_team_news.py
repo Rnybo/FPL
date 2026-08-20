@@ -8,9 +8,12 @@ polling -- it's a live-only enhancement layer, not a training feature.
 
 Pulls bootstrap-static/ (current, live) and stores each player's current
 availability signal: status code, chance of playing this/next round, and any
-news text (injury/suspension updates). Matches to our stable player_id via
-name (same identity pattern used throughout this project for cross-source
-joins -- see load_player_gameweeks_to_cache.py).
+news text (injury/suspension updates) -- plus set-piece taker order
+(penalties/direct free-kicks/corners & indirect free-kicks -- verified live
+against the real API: 1 = primary taker, 2 = backup, NULL if not on duty).
+Matches to our stable player_id via name (same identity pattern used
+throughout this project for cross-source joins -- see
+load_player_gameweeks_to_cache.py).
 
 Run this close to a gameweek deadline for the freshest signal -- these fields
 update as team news breaks (press conferences, etc.), unlike the rest of our
@@ -65,14 +68,17 @@ if __name__ == "__main__":
             el["status"], el.get("chance_of_playing_this_round"),
             el.get("chance_of_playing_next_round"), el.get("news") or None,
             el.get("news_added"), captured_at,
+            el.get("penalties_order"), el.get("direct_freekicks_order"),
+            el.get("corners_and_indirect_freekicks_order"),
         ))
 
     conn.executemany(
         """INSERT INTO live_player_status
            (player_id, fpl_element_id, web_name, team_name, status,
             chance_of_playing_this_round, chance_of_playing_next_round,
-            news, news_added, captured_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            news, news_added, captured_at, penalties_order,
+            direct_freekicks_order, corners_and_indirect_freekicks_order)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
     conn.commit()
@@ -82,7 +88,7 @@ if __name__ == "__main__":
     flagged = [r for r in rows if r[4] != "a" or (r[5] is not None and r[5] < 100)]
     print(f"\n{len(flagged)} players currently flagged (not fully available):")
     for r in sorted(flagged, key=lambda r: (r[5] if r[5] is not None else -1))[:15]:
-        _, _, web_name, team, status, chance_this, chance_next, news, _, _ = r
+        _, _, web_name, team, status, chance_this, chance_next, news, _, _, _, _, _ = r
         line = (f"  {web_name:20s} {team:15s} status={STATUS_MEANING.get(status, status):10s} "
                 f"chance_next={chance_next}  news={news}")
         print(line.encode("ascii", "replace").decode())

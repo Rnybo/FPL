@@ -29,7 +29,7 @@ def test_players_returns_real_data():
     data = resp.json()
     assert len(data["players"]) > 0
     first = data["players"][0]
-    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_total_points", "last_season_breakdown", "prob", "opponent_stats", "points_by_month", "points_vs_opponent_last_season", "ownership_pct", "differential"}
+    assert set(first.keys()) == {"player_id", "name", "position", "team", "team_code", "price", "xP", "breakdown", "gameweeks", "historic", "last_season_stats", "last_season_total_points", "last_season_breakdown", "prob", "opponent_stats", "points_by_month", "points_vs_opponent_last_season", "ownership_pct", "differential", "status", "status_label", "chance_of_playing_next_round", "news", "set_piece_roles"}
     assert first["position"] in {"GK", "DEF", "MID", "FWD"}
 
 
@@ -909,6 +909,41 @@ def test_squad_optimal_returns_starter_and_bench_ids():
     assert set(starter_ids).isdisjoint(bench_ids)
     squad_ids = {p["player_id"] for p in data["squad"]}
     assert set(starter_ids) | set(bench_ids) == squad_ids
+
+
+def test_squad_plan_returns_one_step_per_gameweek_with_valid_lineups():
+    """The 'Drejebog' -- built for a squad that isn't a real FPL team yet,
+    so it takes 15 player_ids + a budget rather than a manager id."""
+    optimal = client.get("/api/squad/optimal").json()
+    ids = [p["player_id"] for p in optimal["squad"]]
+    resp = client.get(f"/api/squad/plan?player_ids={','.join(map(str, ids))}&gw_start=1&horizon=3&free_transfers=1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["gameweeks"] == [1, 2, 3]
+    assert len(data["plan"]) == 3
+    for step, gw in zip(data["plan"], data["gameweeks"]):
+        assert step["gameweek"] == gw
+        assert sum(step["formation"].values()) == 11
+        assert len(step["starter_ids"]) == 11
+        assert len(step["bench_ids"]) == 4
+        assert len(step["squad"]) == 15
+        assert 0 <= step["free_transfers_after"] <= 5
+
+
+def test_squad_plan_rejects_squad_over_budget():
+    optimal = client.get("/api/squad/optimal").json()
+    ids = [p["player_id"] for p in optimal["squad"]]
+    resp = client.get(
+        f"/api/squad/plan?player_ids={','.join(map(str, ids))}&gw_start=1&horizon=1&budget=1.0"
+    )
+    assert resp.status_code == 400
+
+
+def test_squad_plan_rejects_wrong_player_count():
+    players = client.get("/api/players").json()["players"]
+    ids = [p["player_id"] for p in players[:10]]
+    resp = client.get(f"/api/squad/plan?player_ids={','.join(map(str, ids))}")
+    assert resp.status_code == 400
 
 
 def test_captain_picks_returns_fixture_and_fdr_context():

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { PlayersResponse, ModelRun, FixturesResponse, OptimalSquad, CaptainPicksResponse, TeamOverview, LeagueResponse, SavedSquadSummary, SavedSquadDetail } from './types'
+import type { PlayersResponse, ModelRun, FixturesResponse, OptimalSquad, CaptainPicksResponse, TeamOverview, TeamPlanResponse, LeagueResponse, SavedSquadSummary, SavedSquadDetail, PerformanceResponse } from './types'
 
 export function usePlayers(gwStart?: number, gwEnd?: number) {
   const params = new URLSearchParams()
@@ -63,6 +63,32 @@ export function useSquadLineup(playerIds: number[], gwStart?: number, gwEnd?: nu
   })
 }
 
+// The 'Drejebog' -- multi-gameweek playbook for a squad being BUILT here
+// (not yet a real FPL team), see squad.py's GET /api/squad/plan. Only
+// enabled once exactly 15 players are picked (a partial squad 400s).
+export function useSquadPlan(
+  playerIds: number[],
+  options: { gwStart?: number; horizon?: number; freeTransfers?: number; allowHits?: boolean; budget?: number; minGain?: number } = {},
+) {
+  const { gwStart, horizon = 5, freeTransfers = 1, allowHits = false, budget = 100.0, minGain = 2.0 } = options
+  const params = new URLSearchParams()
+  params.set('player_ids', playerIds.join(','))
+  if (gwStart) params.set('gw_start', String(gwStart))
+  params.set('horizon', String(horizon))
+  params.set('free_transfers', String(freeTransfers))
+  params.set('allow_hits', String(allowHits))
+  params.set('budget', String(budget))
+  params.set('min_gain', String(minGain))
+
+  return useQuery({
+    queryKey: ['squad-plan', playerIds, gwStart, horizon, freeTransfers, allowHits, budget, minGain],
+    queryFn: () => apiGet<TeamPlanResponse>(`/api/squad/plan?${params.toString()}`),
+    enabled: playerIds.length === 15,
+    retry: false,
+    staleTime: 5 * 60 * 1000, // solver result, no need to refetch aggressively
+  })
+}
+
 export function useCaptainPicks(gw?: number) {
   const qs = gw ? `?gw=${gw}` : ''
   return useQuery({
@@ -89,6 +115,29 @@ export function useLeague(leagueId: number | null) {
     queryFn: () => apiGet<LeagueResponse>(`/api/league/${leagueId}`),
     enabled: leagueId != null,
     retry: false,
+  })
+}
+
+// Multi-gameweek game plan (see team.py's GET /{team_id}/plan). Only enabled
+// once the caller knows the squad is published and fully matched (same
+// `enabled` gate useTeam's data.squad_published/data.lineup already tells
+// the caller) -- calling this before that would 409.
+export function useTeamPlan(
+  teamId: number | null,
+  options: { horizon?: number; freeTransfers?: number; allowHits?: boolean; minGain?: number; enabled?: boolean } = {},
+) {
+  const { horizon = 5, freeTransfers = 1, allowHits = false, minGain = 2.0, enabled = true } = options
+  const params = new URLSearchParams()
+  params.set('horizon', String(horizon))
+  params.set('free_transfers', String(freeTransfers))
+  params.set('allow_hits', String(allowHits))
+  params.set('min_gain', String(minGain))
+  return useQuery({
+    queryKey: ['team-plan', teamId, horizon, freeTransfers, allowHits, minGain],
+    queryFn: () => apiGet<TeamPlanResponse>(`/api/team/${teamId}/plan?${params.toString()}`),
+    enabled: teamId != null && enabled,
+    retry: false,
+    staleTime: 5 * 60 * 1000, // solver result, no need to refetch aggressively
   })
 }
 
@@ -126,6 +175,16 @@ export function useUpdateSavedSquad() {
     mutationFn: ({ id, ...body }: { id: number; name?: string; player_ids?: number[]; locked_player_ids?: number[] }) =>
       apiPut<SavedSquadDetail>(`/api/saved-squads/${id}`, body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['saved-squads'] }),
+  })
+}
+
+// Player Performance tab -- gw-window independent (backed by the same
+// in-process cache pattern as usePlayers' backend, see performance.py), so
+// no gw params here, unlike usePlayers.
+export function usePerformance() {
+  return useQuery({
+    queryKey: ['performance'],
+    queryFn: () => apiGet<PerformanceResponse>('/api/performance'),
   })
 }
 

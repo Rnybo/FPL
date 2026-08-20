@@ -33,6 +33,17 @@ DB = ROOT / "data" / "fpl_cache.db"
 
 UNAVAILABLE_STATUSES = {"i", "s", "u"}
 
+# Human-readable labels for the raw single-letter status codes -- used
+# wherever status is surfaced to the person (Player Scout, Player
+# Performance, Squad Builder, My Team), not just fed into the model.
+STATUS_LABELS = {
+    "a": "Available",
+    "d": "Doubtful",
+    "i": "Injured",
+    "s": "Suspended",
+    "u": "Unavailable",
+}
+
 
 def apply_override(p_played_model: float, status: str, chance_next: float | None) -> float:
     if status in UNAVAILABLE_STATUSES:
@@ -43,13 +54,41 @@ def apply_override(p_played_model: float, status: str, chance_next: float | None
 
 
 def load_live_status(conn) -> pd.DataFrame:
+    # `news` for display; set-piece order columns added for the same
+    # reason -- existing callers that .merge() this or select a specific
+    # column subset are unaffected by extra columns.
     return pd.read_sql_query(
-        """SELECT player_id, web_name, status, chance_of_playing_next_round
+        """SELECT player_id, web_name, status, chance_of_playing_next_round, news,
+                  penalties_order, direct_freekicks_order, corners_and_indirect_freekicks_order
            FROM live_player_status
            WHERE captured_at = (SELECT MAX(captured_at) FROM live_player_status)
            AND player_id IS NOT NULL""",
         conn,
     )
+
+
+# Short display codes for set-piece duty, in a fixed display order (pens,
+# then direct free-kicks, then corners/indirect free-kicks) -- matches
+# exactly what was asked for: "Pen1, Pen2, DF1, DF2, C/IF1, C/IF2". Any order
+# number beyond 2 still formats correctly (e.g. "Pen3"), just less common.
+SET_PIECE_LABELS = [
+    ("penalties_order", "Pen"),
+    ("direct_freekicks_order", "DF"),
+    ("corners_and_indirect_freekicks_order", "C/IF"),
+]
+
+
+def set_piece_roles(row) -> list[str]:
+    """row: a dict/Series-like with the three *_order keys (from
+    load_live_status). Returns e.g. ["Pen1", "DF2"] -- only the duties this
+    player actually has (non-null order), skipping the rest entirely rather
+    than showing a placeholder for "not on this duty"."""
+    roles = []
+    for col, prefix in SET_PIECE_LABELS:
+        order = row.get(col) if hasattr(row, "get") else row[col]
+        if order is not None and not pd.isna(order):
+            roles.append(f"{prefix}{int(order)}")
+    return roles
 
 
 if __name__ == "__main__":

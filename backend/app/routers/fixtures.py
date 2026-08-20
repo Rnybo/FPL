@@ -259,6 +259,52 @@ def _team_last_season_stats() -> dict[str, dict]:
     return out
 
 
+SET_PIECE_DUTY_COLS = [
+    ("penalties_order", "penalties"),
+    ("direct_freekicks_order", "direct_freekicks"),
+    ("corners_and_indirect_freekicks_order", "corners_and_indirect_freekicks"),
+]
+
+
+def _set_piece_takers_by_team() -> dict[str, dict]:
+    """Per CURRENT team: the full penalty / direct free-kick / corner &
+    indirect free-kick order, each a list of {player_id, name, order}
+    sorted ascending (1 = primary taker first) -- backs Team Scout's team
+    detail view. Sourced from the same live snapshot as players.py's own
+    set_piece_roles (live_player_status -- see that table's schema comment:
+    a live-only fact, not something with a meaningful history). Grouped by
+    `team_name` as CAPTURED in that same live snapshot, not via a
+    player_season join -- a just-completed transfer shows up under their
+    new club immediately this way, not lagging until the next roster sync.
+    A player with no duty at all on a given list simply isn't in it.
+    """
+    df = query_df(
+        """SELECT player_id, web_name, team_name, penalties_order,
+                  direct_freekicks_order, corners_and_indirect_freekicks_order
+           FROM live_player_status
+           WHERE captured_at = (SELECT MAX(captured_at) FROM live_player_status)
+                 AND team_name IS NOT NULL"""
+    )
+    if df.empty:
+        return {}
+
+    out: dict[str, dict] = {}
+    for team_name, group in df.groupby("team_name"):
+        entry: dict[str, list[dict]] = {}
+        for col, key in SET_PIECE_DUTY_COLS:
+            takers = group[group[col].notna()].sort_values(col)
+            entry[key] = [
+                {
+                    "player_id": int(r.player_id) if pd.notna(r.player_id) else None,
+                    "name": r.web_name,
+                    "order": int(getattr(r, col)),
+                }
+                for r in takers.itertuples()
+            ]
+        out[team_name] = entry
+    return out
+
+
 def _team_goals_vs_opponent(current_fixtures: pd.DataFrame) -> dict[str, list[dict]]:
     """For each CURRENT team, for each of THEIR fixtures within the already
     gw-filtered `current_fixtures` (the same window /api/fixtures was
@@ -380,4 +426,5 @@ def list_fixtures(
         "recent_form": _recent_form_by_team(),
         "last_season_team_stats": _team_last_season_stats(),
         "goals_vs_opponent": _team_goals_vs_opponent(df),
+        "set_piece_takers": _set_piece_takers_by_team(),
     }

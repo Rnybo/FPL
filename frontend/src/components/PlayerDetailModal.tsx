@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import PlayerShirt from './PlayerShirt'
+import SetPieceTags from './SetPieceTags'
 import { FDR_COLORS } from './FdrStrip'
 import LastSeasonChart from './LastSeasonChart'
 import MonthlyPointsBoxPlot from './MonthlyPointsBoxPlot'
@@ -70,12 +71,30 @@ export default function PlayerDetailModal({ player, fixtures, onClose }: {
           <div className="flex items-center gap-3">
             <PlayerShirt player={player} size={40} />
             <div>
-              <h2 className="text-lg sm:text-xl font-bold text-slate-900">{player.name}</h2>
-              <div className="flex gap-3 sm:gap-4 mt-1 flex-wrap">
+              <h2 className="text-lg sm:text-xl font-bold text-slate-900">
+                {player.name}
+                <SetPieceTags roles={player.set_piece_roles} />
+              </h2>
+              <div className="flex gap-3 sm:gap-4 mt-1 flex-wrap items-start">
                 <Badge label="POS" value={player.position} />
                 <Badge label="PRICE" value={`£${player.price.toFixed(1)}m`} />
                 <Badge label="TEAM" value={player.team} />
+                {player.status && player.status !== 'a' && (
+                  <div>
+                    <p className="text-[10px] text-slate-400 tracking-wide">STATUS</p>
+                    <p className={`text-sm font-semibold ${
+                      player.status === 'd' ? 'text-amber-600' : 'text-red-600'
+                    }`}>
+                      {player.status_label}
+                      {player.status === 'd' && player.chance_of_playing_next_round != null &&
+                        ` (${player.chance_of_playing_next_round}%)`}
+                    </p>
+                  </div>
+                )}
               </div>
+              {player.news && (
+                <p className="text-xs text-slate-500 mt-1.5 max-w-sm">{player.news}</p>
+              )}
             </div>
           </div>
           <button

@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import ALLOWED_ORIGINS
-from app.routers import players, model_runs, squad, league, team, fixtures, captain, saved_squads
+from app.routers import players, model_runs, squad, league, team, fixtures, captain, saved_squads, performance
 from app import scheduler
 
 
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     # through all of it -- see players.py's warm_players_cache docstring.
     # Backgrounded (not awaited) so app startup itself isn't delayed by it.
     threading.Thread(target=players.warm_players_cache, daemon=True).start()
+    threading.Thread(target=performance.warm_performance_cache, daemon=True).start()
     yield
     scheduler.stop()
 
@@ -49,6 +50,7 @@ app.include_router(team.router)
 app.include_router(fixtures.router)
 app.include_router(captain.router)
 app.include_router(saved_squads.router)
+app.include_router(performance.router)
 
 
 @app.get("/api/health")

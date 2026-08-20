@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X, Plus, Wand2, RotateCcw, UserPlus, Lock, Unlock, Trash2, ChevronDown, ChevronUp, Save, FolderOpen } from 'lucide-react'
-import { usePlayers, useOptimalSquad, useSavedSquads, useCreateSavedSquad, useDeleteSavedSquad } from '../api/hooks'
+import { usePlayers, useOptimalSquad, useSavedSquads, useCreateSavedSquad, useDeleteSavedSquad, useSquadPlan } from '../api/hooks'
 import { apiGet } from '../api/client'
 import PlayerShirt from '../components/PlayerShirt'
 import CaptainPicks from '../components/CaptainPicks'
+import { GamePlanControls, GamePlanSummary, GamePlanTimeline } from '../components/GamePlan'
 import type { Player, OptimalSquad, SavedSquadDetail } from '../api/types'
 
 const BUDGET = 100.0
@@ -666,6 +667,12 @@ export default function SquadBuilder() {
             <NearMissPanel nearMissBest={nearMiss} nearMissValue={nearMissValue} slots={slots} onSwap={swapIn}
               gwStart={gwStart} gwEnd={gwEnd} />
 
+            {filledCount === 15 && (
+              <div className="mt-6">
+                <DrejebogPanel playerIds={slots.filter((id): id is number => id != null)} gwStart={gwStart} budget={BUDGET} />
+              </div>
+            )}
+
             <CaptainPicks gw={gwStart} />
           </>
         )}
@@ -848,6 +855,57 @@ function NearMissPanel({ nearMissBest, nearMissValue, slots, onSwap, gwStart, gw
           )
         })}
       </div>
+    </div>
+  )
+}
+
+// The 'Drejebog' -- a gameweek-by-gameweek playbook for the squad you're
+// BUILDING here (not a real FPL team yet), so it's driven by squad.py's
+// GET /api/squad/plan rather than team.py's -- see useSquadPlan's docstring.
+// Only rendered once all 15 slots are filled (see the filledCount===15 gate
+// at the call site) -- a partial squad 400s the endpoint.
+function DrejebogPanel({ playerIds, gwStart, budget }: { playerIds: number[]; gwStart: number; budget: number }) {
+  const [horizon, setHorizon] = useState(5)
+  const [freeTransfersInput, setFreeTransfersInput] = useState('1')
+  const [allowHits, setAllowHits] = useState(false)
+  const [minGain, setMinGain] = useState(2.0)
+  const freeTransfers = Math.max(0, Math.min(5, Number(freeTransfersInput) || 0))
+  const { data, isLoading, isFetching, isError, error } = useSquadPlan(playerIds, {
+    gwStart, horizon, freeTransfers, allowHits, budget, minGain,
+  })
+
+  return (
+    <div>
+      <h3 className="text-base font-bold text-slate-900 mb-1">Drejebog</h3>
+      <p className="text-xs text-slate-500 mb-3 max-w-2xl">
+        Your gameweek-by-gameweek script for this exact squad -- starting XI, captain,
+        substitutions and transfers, round by round, greedy one gameweek at a time (see
+        optimise.py's plan_horizon docstring for exactly how it decides). Free transfers
+        assume the standard 1 going into GW1, same as real FPL.
+      </p>
+
+      <GamePlanControls
+        horizon={horizon} onHorizonChange={setHorizon}
+        freeTransfersInput={freeTransfersInput} onFreeTransfersInputChange={setFreeTransfersInput}
+        freeTransfers={freeTransfers} allowHits={allowHits} onAllowHitsChange={setAllowHits}
+        minGain={minGain} onMinGainChange={setMinGain}
+        isFetching={isFetching} isLoading={isLoading}
+      />
+
+      {isLoading && (
+        <div className="space-y-2">
+          {[0, 1, 2].map((i) => <div key={i} className="h-11 rounded-lg bg-slate-100 animate-pulse" />)}
+        </div>
+      )}
+      {isError && (
+        <p className="text-xs text-red-600 py-2">Couldn't build a Drejebog: {(error as Error).message}</p>
+      )}
+      {data && (
+        <>
+          <GamePlanSummary plan={data.plan} hitCost={data.hit_cost} />
+          <GamePlanTimeline plan={data.plan} />
+        </>
+      )}
     </div>
   )
 }

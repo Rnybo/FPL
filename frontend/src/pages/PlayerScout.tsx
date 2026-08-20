@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { ChevronsUpDown, Plus, X, Check } from 'lucide-react'
 import { usePlayers, useFixtures } from '../api/hooks'
 import PlayerShirt from '../components/PlayerShirt'
+import PlayerStatusTag from '../components/PlayerStatusTag'
+import SetPieceTags from '../components/SetPieceTags'
 import FdrStrip, { buildFdrByTeam } from '../components/FdrStrip'
 import PlayerDetailModal from '../components/PlayerDetailModal'
 import type { Player, XpBreakdown, OutcomeProbabilities } from '../api/types'
@@ -410,7 +412,11 @@ function PlayerRow({ player, fdr, onClick, index }: {
     <tr onClick={onClick}
         className={`border-t border-slate-100 hover:bg-slate-100 cursor-pointer ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
       <td className="py-2 pr-3 pl-3"><PlayerShirt player={player} size={22} /></td>
-      <td className="py-2 pr-3 font-medium text-slate-900">{player.name}</td>
+      <td className="py-2 pr-3 font-medium text-slate-900">
+        {player.name}
+        <PlayerStatusTag player={player} />
+        <SetPieceTags roles={player.set_piece_roles} />
+      </td>
       <td className="py-2 pr-3 text-slate-600">{player.team}</td>
       <td className="py-2 pr-3">
         <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-700">

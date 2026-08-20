@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from app.config import CURRENT_SEASON
 from app.services.db import query_df
+from apply_live_status_override import load_live_status, STATUS_LABELS, set_piece_roles
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -106,6 +107,45 @@ def _position_by_player() -> dict[int, str]:
         df = query_df("SELECT player_id, position FROM players")
         return dict(zip(df["player_id"], df["position"]))
     return _cached("position_by_player", compute)
+
+
+def _status_by_player() -> dict[int, dict]:
+    """Current live availability per player -- status code, human label,
+    chance of playing next round, and injury/suspension news text. Backs the
+    injured/suspended highlighting shown across every tab (Player Scout,
+    Player Performance, Squad Builder, My Team) -- see live_player_status's
+    schema comment for why this can't be backtested, only shown live.
+    Independent of gw window; invalidated only by a fresh
+    fetch_live_team_news.py run (see scheduler.py).
+    """
+    def compute():
+        import sqlite3
+        from app.config import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            live = load_live_status(conn)
+        finally:
+            conn.close()
+        out: dict[int, dict] = {}
+        for row in live.to_dict(orient="records"):
+            pid = row["player_id"]
+            if pid is None:
+                continue
+            status = row["status"] or "a"
+            # pd.notna guards, not `or None` -- a NaN float is TRUTHY in
+            # Python (`nan or None` evaluates to nan, not None), the same
+            # trap already hit and fixed once in performance.py's _json_safe.
+            chance = row["chance_of_playing_next_round"]
+            news = row["news"]
+            out[int(pid)] = {
+                "status": status,
+                "status_label": STATUS_LABELS.get(status, status),
+                "chance_of_playing_next_round": chance if pd.notna(chance) else None,
+                "news": news if pd.notna(news) else None,
+                "set_piece_roles": set_piece_roles(row),
+            }
+        return out
+    return _cached("status_by_player", compute)
 
 
 def _historic_by_player() -> dict[int, dict]:
@@ -613,6 +653,7 @@ def warm_players_cache():
     other reuses the result -- no duplicate work, no crash.
     """
     _position_by_player()
+    _status_by_player()
     _historic_by_player()
     _last_season_stats_by_player()
     _last_season_breakdown()
@@ -681,6 +722,7 @@ def list_players(
     sum_cols = ["xP"] + BREAKDOWN_COLS
     df = raw_df.groupby(["player_id", "name", "position", "team", "team_code", "price", "ownership_pct"], as_index=False, dropna=False)[sum_cols].sum()
 
+    status_by_player = _status_by_player()
     historic_by_player = _historic_by_player()
     last_season_stats_by_player = _last_season_stats_by_player()
     breakdown_by_player = _last_season_breakdown()
@@ -693,6 +735,16 @@ def list_players(
     for row in df.to_dict(orient="records"):
         breakdown = {c: round(row.pop(c), 3) for c in BREAKDOWN_COLS}
         row["breakdown"] = breakdown
+        # Default to "available" (not flagged) when a player has no live-status
+        # row at all -- e.g. a brand-new signing fetch_live_team_news.py hasn't
+        # matched by name yet (see that script's docstring on unmatched rows).
+        # Defaulting to "unknown/unavailable" would be a worse false positive
+        # than defaulting to available for the rare gap case.
+        status_info = status_by_player.get(row["player_id"], {
+            "status": "a", "status_label": STATUS_LABELS["a"],
+            "chance_of_playing_next_round": None, "news": None, "set_piece_roles": [],
+        })
+        row.update(status_info)
         # Real ownership + differential value: FPL is a RELATIVE game (rank
         # vs other managers), so a high-xP player everyone already owns
         # gains you nothing over your rivals -- a similarly-good, LOW-owned

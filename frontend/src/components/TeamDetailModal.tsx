@@ -1,20 +1,22 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
-import type { TeamRecentForm, TeamLastSeasonStats, TeamOpponentEntry, TeamGoalsVsOpponentEntry } from '../api/types'
+import type { TeamRecentForm, TeamLastSeasonStats, TeamOpponentEntry, TeamGoalsVsOpponentEntry, TeamSetPieceTakers, TeamSetPieceTakerEntry } from '../api/types'
 
 // Click-through detail for a team on Team Scout -- the main table only has
 // room for the ONE home/away split that's actually relevant to a team's
 // next fixture (see FixtureSwing.tsx); this shows the FULL picture: both
 // home and away recent form, last season's real record by venue,
-// favorable/unfavorable opponents, and -- for every gameweek in the
-// currently selected range -- goals scored/conceded against that same
-// opponent last season (mirrors Player Scout's "Points vs opponent last
-// season" table, at team level with goals instead of fantasy points).
-export default function TeamDetailModal({ team, recentForm, lastSeasonStats, goalsVsOpponent, onClose }: {
+// favorable/unfavorable opponents, set-piece taking order, and -- for every
+// gameweek in the currently selected range -- goals scored/conceded
+// against that same opponent last season (mirrors Player Scout's "Points
+// vs opponent last season" table, at team level with goals instead of
+// fantasy points).
+export default function TeamDetailModal({ team, recentForm, lastSeasonStats, goalsVsOpponent, setPieceTakers, onClose }: {
   team: string
   recentForm?: TeamRecentForm
   lastSeasonStats?: TeamLastSeasonStats
   goalsVsOpponent: TeamGoalsVsOpponentEntry[]
+  setPieceTakers?: TeamSetPieceTakers
   onClose: () => void
 }) {
   return (
@@ -92,6 +94,8 @@ export default function TeamDetailModal({ team, recentForm, lastSeasonStats, goa
             <p className="text-xs text-slate-400 mb-6">No last-season data (e.g. newly promoted).</p>
           )}
 
+          <SetPieceTakersPanel takers={setPieceTakers} />
+
           <GoalsVsOpponentTable entries={goalsVsOpponent} />
         </div>
       </div>
@@ -111,6 +115,69 @@ function FormCard({ label, games, gf, ga }: { label: string; games: number; gf: 
         </>
       ) : (
         <p className="text-xs text-slate-400">No data</p>
+      )}
+    </div>
+  )
+}
+
+// Full set-piece taking order for this team -- penalties, direct free-kicks,
+// and corners & indirect free-kicks each as their own ranked mini-list (1 =
+// primary taker). Live snapshot (see backend's _set_piece_takers_by_team),
+// so this reflects whoever's actually on duty right now, not a historical
+// record. A duty with no one listed at all (rare, but possible if FPL
+// hasn't published an order for it yet) is simply omitted rather than
+// shown as an empty box.
+function SetPieceTakersPanel({ takers }: { takers?: TeamSetPieceTakers }) {
+  const duties: { key: keyof TeamSetPieceTakers; label: string; tone: 'violet' | 'blue' | 'teal' }[] = [
+    { key: 'penalties', label: 'Penalties', tone: 'violet' },
+    { key: 'direct_freekicks', label: 'Direct free-kicks', tone: 'blue' },
+    { key: 'corners_and_indirect_freekicks', label: 'Corners & indirect free-kicks', tone: 'teal' },
+  ]
+  const hasAny = takers && duties.some((d) => (takers[d.key] ?? []).length > 0)
+
+  return (
+    <div className="mb-6">
+      <p className="text-xs font-semibold text-slate-500 tracking-wide mb-1">SET-PIECE TAKERS</p>
+      <p className="text-[11px] text-slate-400 mb-2">
+        Current taking order, straight from FPL -- 1 = primary taker. Live snapshot, not a historical record.
+      </p>
+      {hasAny ? (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {duties.map((d) => (
+            <SetPieceDutyList key={d.key} label={d.label} entries={takers?.[d.key] ?? []} tone={d.tone} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-slate-400">No set-piece order published for this team yet.</p>
+      )}
+    </div>
+  )
+}
+
+function SetPieceDutyList({ label, entries, tone }: {
+  label: string
+  entries: TeamSetPieceTakerEntry[]
+  tone: 'violet' | 'blue' | 'teal'
+}) {
+  const toneCls = {
+    violet: 'bg-violet-50 text-violet-700 border-violet-100',
+    blue: 'bg-blue-50 text-blue-700 border-blue-100',
+    teal: 'bg-teal-50 text-teal-700 border-teal-100',
+  }[tone]
+  return (
+    <div className="border border-slate-200 rounded-lg overflow-hidden">
+      <div className={`px-3 py-1.5 text-xs font-semibold border-b ${toneCls}`}>{label}</div>
+      {entries.length > 0 ? (
+        <ul>
+          {entries.map((e) => (
+            <li key={e.order} className="flex items-center gap-2 px-3 py-1.5 text-sm border-t border-slate-50 first:border-t-0">
+              <span className="text-[10px] font-bold text-slate-400 w-4">{e.order}</span>
+              <span className="text-slate-800 truncate">{e.name}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-slate-400 px-3 py-2">Not published</p>
       )}
     </div>
   )

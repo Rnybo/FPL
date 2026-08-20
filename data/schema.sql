@@ -274,3 +274,15 @@ CREATE TABLE IF NOT EXISTS saved_squads (
 -- JSON array, default '[]' so pre-existing rows (saved before this column
 -- existed) just mean "nothing was locked," not a NULL/missing-data case.
 ALTER TABLE saved_squads ADD COLUMN locked_player_ids TEXT NOT NULL DEFAULT '[]';
+
+-- Set-piece taker order, straight from bootstrap-static's per-player fields
+-- (verified live: penalties_order/direct_freekicks_order/corners_and_
+-- indirect_freekicks_order -- 1 = primary taker, 2 = backup, etc., NULL if
+-- not on any set-piece duty). Same "live snapshot, not historically
+-- preserved" nature as the rest of live_player_status (see that table's own
+-- comment) -- a manager can reassign duty mid-season, and FPL doesn't
+-- expose a history of past assignments, so this only reflects whatever was
+-- true as of the most recent fetch_live_team_news.py run.
+ALTER TABLE live_player_status ADD COLUMN penalties_order INTEGER;
+ALTER TABLE live_player_status ADD COLUMN direct_freekicks_order INTEGER;
+ALTER TABLE live_player_status ADD COLUMN corners_and_indirect_freekicks_order INTEGER;

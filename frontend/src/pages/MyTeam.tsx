@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Search } from 'lucide-react'
-import { useTeam } from '../api/hooks'
+import { Search, Wallet } from 'lucide-react'
+import { useTeam, useTeamPlan } from '../api/hooks'
 import PlayerShirt from '../components/PlayerShirt'
+import { GamePlanControls, GamePlanSummary, GamePlanTimeline } from '../components/GamePlan'
 import type { TeamPick } from '../api/types'
 
 const POSITION_ORDER = ['GK', 'DEF', 'MID', 'FWD'] as const
@@ -55,12 +56,12 @@ export default function MyTeam() {
         </p>
       )}
 
-      {data && <TeamView data={data} />}
+      {data && <TeamView data={data} teamId={teamId} />}
     </div>
   )
 }
 
-function TeamView({ data }: { data: import('../api/types').TeamOverview }) {
+function TeamView({ data, teamId }: { data: import('../api/types').TeamOverview; teamId: number | null }) {
   const pickById = new Map((data.picks ?? []).map((p) => [p.player_id, p]))
 
   return (
@@ -126,6 +127,10 @@ function TeamView({ data }: { data: import('../api/types').TeamOverview }) {
           </p>
 
           <SuggestionsPanel suggestions={data.suggestions} />
+
+          <div className="mt-8">
+            <GamePlanPanel teamId={teamId} />
+          </div>
         </>
       )}
 
@@ -133,6 +138,54 @@ function TeamView({ data }: { data: import('../api/types').TeamOverview }) {
         <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
           {data.note}
         </p>
+      )}
+    </div>
+  )
+}
+
+function GamePlanPanel({ teamId }: { teamId: number | null }) {
+  const [horizon, setHorizon] = useState(5)
+  const [freeTransfersInput, setFreeTransfersInput] = useState('1')
+  const [allowHits, setAllowHits] = useState(false)
+  const [minGain, setMinGain] = useState(2.0)
+  const freeTransfers = Math.max(0, Math.min(5, Number(freeTransfersInput) || 0))
+  const { data, isLoading, isFetching, isError, error } = useTeamPlan(teamId, { horizon, freeTransfers, allowHits, minGain })
+  const endingBank = data?.plan[data.plan.length - 1]?.bank_after
+
+  return (
+    <div>
+      <h3 className="text-base font-bold text-slate-900 mb-3">Game plan</h3>
+      <p className="text-xs text-slate-500 mb-3 max-w-2xl">
+        Round-by-round lineup, captain and transfer decisions across the window -- greedy, one
+        gameweek at a time (see optimise.py's plan_horizon docstring for exactly how it decides).
+      </p>
+
+      <GamePlanControls
+        horizon={horizon} onHorizonChange={setHorizon}
+        freeTransfersInput={freeTransfersInput} onFreeTransfersInputChange={setFreeTransfersInput}
+        freeTransfers={freeTransfers} allowHits={allowHits} onAllowHitsChange={setAllowHits}
+        minGain={minGain} onMinGainChange={setMinGain}
+        isFetching={isFetching} isLoading={isLoading}
+      />
+
+      {isLoading && (
+        <div className="space-y-2">
+          {[0, 1, 2].map((i) => <div key={i} className="h-11 rounded-lg bg-slate-100 animate-pulse" />)}
+        </div>
+      )}
+      {isError && (
+        <p className="text-xs text-red-600 py-2">Couldn't build a game plan: {(error as Error).message}</p>
+      )}
+      {data && (
+        <>
+          <GamePlanSummary plan={data.plan} hitCost={data.hit_cost} />
+          <GamePlanTimeline plan={data.plan} />
+          {endingBank != null && (
+            <p className="text-xs text-slate-400 mt-3 flex items-center gap-1">
+              <Wallet size={12} /> Bank at the end of this window: £{endingBank.toFixed(1)}m
+            </p>
+          )}
+        </>
       )}
     </div>
   )

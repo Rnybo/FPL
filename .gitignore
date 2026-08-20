@@ -8,3 +8,5 @@ frontend/dist/
 *.pyc
 .DS_Store
 test_output.txt
+vercel_recovery_codes.txt
+*.new_tail

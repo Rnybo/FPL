@@ -14,11 +14,13 @@ Query params:
     the other constraints.
 """
 from fastapi import APIRouter, HTTPException, Query
+import pandas as pd
 
 from app.config import CURRENT_SEASON
 from app.services.db import query_df, get_connection
 
 import optimise
+from apply_live_status_override import load_live_status, STATUS_LABELS, UNAVAILABLE_STATUSES, set_piece_roles
 
 router = APIRouter(prefix="/api/squad", tags=["squad"])
 
@@ -49,6 +51,52 @@ LOOKAHEAD_WEEKS = 3
 LOOKAHEAD_WEIGHT = 0.3
 
 
+def _status_df():
+    """Current live availability, one row per player_id -- status code,
+    human label, chance of playing next round, and set-piece duty (e.g.
+    ["Pen1", "DF2"]). Joined onto the candidate pool so injured/suspended
+    players can be (a) hard-excluded from the optimizer's picks and (b)
+    still flagged for display when they slip through via an explicit lock.
+    Not cached here (unlike players.py/performance.py's own versions) --
+    this router's whole pool query already runs fresh on every request (see
+    module docstring: "no caching needed yet"), so a fresh status read costs
+    nothing extra relatively."""
+    conn = get_connection()
+    try:
+        live = load_live_status(conn)
+    finally:
+        conn.close()
+    live["status"] = live["status"].fillna("a")
+    live["status_label"] = live["status"].map(STATUS_LABELS).fillna(live["status"])
+    live["set_piece_roles"] = live.apply(set_piece_roles, axis=1)
+    return live[["player_id", "status", "status_label", "chance_of_playing_next_round", "set_piece_roles"]]
+
+
+def _add_status(pool):
+    """Left-joins status onto a candidate pool, defaulting missing rows
+    (no live-status row at all) to 'a'/Available -- same reasoning as
+    players.py's _status_by_player. chance_of_playing_next_round is
+    replaced with plain Python None (not NaN) via .where() so the eventual
+    .to_dict(orient="records") is directly JSON-safe -- a raw float NaN
+    isn't valid JSON and can trip FastAPI's encoder (same trap already
+    hit/fixed once in performance.py's _json_safe)."""
+    pool = pool.merge(_status_df(), on="player_id", how="left")
+    pool["status"] = pool["status"].fillna("a")
+    pool["status_label"] = pool["status_label"].fillna(STATUS_LABELS["a"])
+    pool["chance_of_playing_next_round"] = pool["chance_of_playing_next_round"].astype(object).where(
+        pool["chance_of_playing_next_round"].notna(), None
+    )
+    # A player absent from live_player_status entirely merges in as NaN
+    # (float), not a missing list -- .apply() with isna() replaces those
+    # specifically (a real, present list must not be touched: `if x` on a
+    # non-empty list is fine, but pd.isna() on a list raises, so isinstance
+    # is checked first).
+    pool["set_piece_roles"] = pool["set_piece_roles"].apply(
+        lambda v: v if isinstance(v, list) else []
+    )
+    return pool
+
+
 def _load_pool(run_id: int, gw_start: int | None, gw_end: int | None):
     sql = """SELECT p.player_id, p.name, p.position, ps.team_id, t.name AS team, t.code AS team_code,
                     ps.price_end AS price, mp.predicted_points AS xP
@@ -70,9 +118,10 @@ def _load_pool(run_id: int, gw_start: int | None, gw_end: int | None):
     # RULE FIX: sums across every fixture in the range for a player -- correctly
     # handles both a multi-gameweek horizon AND double-gameweeks within it (see
     # docs/GOTCHAS.md), since both just mean "more than one row for this player".
-    return df.groupby(
+    pool = df.groupby(
         ["player_id", "name", "position", "team_id", "team", "team_code", "price"], as_index=False
     )["xP"].sum()
+    return _add_status(pool)
 
 
 def _add_selection_score(pool, run_id: int, gw_end: int | None):
@@ -209,6 +258,17 @@ def optimal_squad(
     pool = _add_captain_ceiling_bonus(pool, row["run_id"], gw_start, gw_end)
     locked_ids = [int(pid) for pid in locked.split(",") if pid.strip()] if locked else []
 
+    # Hard-exclude injured/suspended/unavailable players from AUTOMATIC
+    # selection -- the model already suppresses their xP toward zero (see
+    # apply_live_status_override.py), but that's a soft signal (a cheap
+    # injured player could still get parked as a near-costless bench filler,
+    # and the residual "expected_bonus" component isn't gated on p_played at
+    # all). An explicit lock overrides this -- if the person specifically
+    # wants to keep someone through a short injury, that's a deliberate
+    # choice, not something this filter should silently override.
+    unavailable_mask = pool["status"].isin(UNAVAILABLE_STATUSES) & ~pool["player_id"].isin(locked_ids)
+    pool = pool[~unavailable_mask].reset_index(drop=True)
+
     # Joint squad+lineup optimizer (see optimise.py's docstring) -- fixes a real
     # objective bug found via user feedback: the old two-stage approach valued
     # all 15 squad players equally, when only 11 actually score points.
@@ -285,3 +345,112 @@ def lineup_for_squad(
     if lineup is None:
         raise HTTPException(400, f"Formation {formation!r} isn't feasible for this squad")
     return _serialize(row["run_id"], gw_start, gw_end, squad, lineup)
+
+
+@router.get("/plan")
+def squad_plan(
+    player_ids: str = Query(..., description="Comma-separated player_ids -- exactly 15, any combination"),
+    gw_start: int | None = Query(None, description="First gameweek to plan (default: the earliest predicted gameweek)"),
+    horizon: int = Query(5, ge=1, le=15, description="Number of gameweeks to plan"),
+    free_transfers: int = Query(1, ge=0, le=optimise.MAX_BANKED_FREE_TRANSFERS,
+                                 description="Free transfers banked at the start of the window"),
+    min_gain: float = Query(2.0, description="Minimum xP gain (over the lookahead window) to justify a transfer"),
+    allow_hits: bool = Query(False, description="Allow -4pt hits for transfers beyond the free ones, when worth it"),
+    hit_cost: float = Query(4.0, ge=0, description="Points deducted per hit (real FPL rule: 4)"),
+    budget: float = Query(100.0, ge=0, description="Total squad budget -- starting bank = budget minus this squad's own cost"),
+):
+    """The 'Drejebog' -- a round-by-round playbook (starting XI, captain,
+    substitutions, transfers) across a multi-gameweek horizon for a squad
+    that's being BUILT here (not yet a real FPL team), so there's no actual
+    manager bank/free-transfer count to query -- starting bank is `budget`
+    minus this exact squad's own cost, and free_transfers is whatever the
+    person says they're planning around (1 going into GW1 for everyone,
+    same as real FPL). Same engine as team.py's GET /{team_id}/plan
+    (optimise.plan_horizon -- see its docstring for exactly how it decides:
+    greedy, round-by-round, free transfers first then optional real -4
+    hits). Duplicated serialization/wiring rather than shared with team.py,
+    per this project's own small-duplication-over-cross-router-imports
+    convention."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT run_id FROM model_runs WHERE model_type='predict_upcoming' ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if row is None:
+        raise HTTPException(404, "No predictions available yet -- run predict_upcoming.py first")
+    run_id = row["run_id"]
+
+    ids = [int(pid) for pid in player_ids.split(",") if pid.strip()]
+    if len(ids) != 15:
+        raise HTTPException(400, f"Expected exactly 15 player_ids, got {len(ids)}")
+
+    if gw_start is None:
+        earliest = query_df(
+            """SELECT MIN(f.gw) AS gw FROM model_predictions mp
+               JOIN fixtures f ON f.fixture_id = mp.fixture_id WHERE mp.run_id = ?""",
+            (run_id,),
+        )
+        gw_start = int(earliest["gw"].iloc[0]) if not earliest.empty and earliest["gw"].iloc[0] is not None else 1
+
+    pool = _load_pool(run_id, gw_start, None)
+    squad_df = pool[pool["player_id"].isin(ids)].copy()
+    missing = set(ids) - set(squad_df["player_id"])
+    if missing:
+        raise HTTPException(400, f"player_id(s) not found in current predictions: {sorted(missing)}")
+    counts = squad_df["position"].value_counts().to_dict()
+    for pos, n in optimise.SQUAD_LIMITS.items():
+        if counts.get(pos, 0) != n:
+            raise HTTPException(400, f"Invalid squad shape: {counts} (need {optimise.SQUAD_LIMITS})")
+
+    bank = budget - float(squad_df["price"].sum())
+    if bank < -1e-6:
+        raise HTTPException(
+            400, f"This squad costs £{squad_df['price'].sum():.1f}m, over the £{budget:.1f}m budget"
+        )
+
+    gameweeks = list(range(gw_start, gw_start + horizon))
+    per_gw_xp = _load_per_gw(run_id, gw_start, gameweeks[-1] + optimise.PLAN_LOOKAHEAD_WEEKS)
+
+    # Never suggest bringing IN an injured/suspended/unavailable player --
+    # same reasoning as /optimal's hard-exclude above. plan_horizon itself
+    # excludes anyone already in squad_df from candidates (by player_id).
+    candidates = pool[~pool["player_id"].isin(ids) & ~pool["status"].isin(UNAVAILABLE_STATUSES)]
+
+    plan = optimise.plan_horizon(
+        squad_df, candidates, per_gw_xp, gameweeks, bank,
+        free_transfers=free_transfers, min_gain=min_gain,
+        allow_hits=allow_hits, hit_cost=hit_cost,
+    )
+
+    return {
+        "gameweeks": gameweeks,
+        "starting_bank": bank,
+        "starting_free_transfers": free_transfers,
+        "allow_hits": allow_hits,
+        "hit_cost": hit_cost,
+        "plan": [
+            {
+                "gameweek": step["gameweek"],
+                "formation": step["formation"],
+                "captain": step["captain"],
+                "vice_captain": step["vice_captain"],
+                "starter_ids": step["starters"]["player_id"].astype(int).tolist(),
+                "bench_ids": step["bench"]["player_id"].astype(int).tolist(),
+                "squad": pd.concat([step["starters"], step["bench"]])[
+                    ["player_id", "name", "position", "team", "price"]
+                ].to_dict(orient="records"),
+                "transfers_in": step["transfers_in"],
+                "transfers_out": step["transfers_out"],
+                "transfers_in_names": step["transfers_in_names"],
+                "transfers_out_names": step["transfers_out_names"],
+                "hits_taken": step["hits_taken"],
+                "free_transfers_after": step["free_transfers_after"],
+                "bank_after": step["bank_after"],
+                "expected_points": float(step["expected_points"]),
+                "expected_points_with_captain": float(step["expected_points_with_captain"]),
+                "expected_points_after_hits": float(step["expected_points_after_hits"]),
+                "expected_points_with_captain_after_hits": float(step["expected_points_with_captain_after_hits"]),
+            }
+            for step in plan
+        ],
+    }

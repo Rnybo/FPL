@@ -135,7 +135,9 @@ def test_team_with_published_squad_returns_matched_lineup_and_suggestions(monkey
 
     assert isinstance(data["suggestions"], list)
     if data["suggestions"]:
-        assert set(data["suggestions"][0].keys()) == {"out_name", "in_name", "position", "gain", "cost_change"}
+        assert set(data["suggestions"][0].keys()) == {
+            "out_name", "in_name", "out_player_id", "in_player_id", "position", "gain", "cost_change"
+        }
 
 
 def test_team_unknown_manager_returns_upstream_error_status(monkeypatch):
@@ -145,3 +147,86 @@ def test_team_unknown_manager_returns_upstream_error_status(monkeypatch):
     monkeypatch.setattr(team_module, "_fetch_json", fake_fetch)
     resp = client.get("/api/team/999999999")
     assert resp.status_code == 404
+
+
+def test_team_plan_returns_one_step_per_gameweek_with_valid_lineups(monkeypatch):
+    codes, element_ids = _real_squad_codes()
+    bootstrap = _fake_bootstrap(current_gw=1, codes=codes, element_ids=element_ids)
+    picks_payload = {
+        "picks": [{"element": eid, "selling_price": 50} for eid in element_ids.values()],
+        "entry_history": {"bank": 15},
+    }
+
+    async def fake_fetch(url):
+        if "/event/" in url:
+            return 200, picks_payload
+        if "bootstrap-static" in url:
+            return 200, bootstrap
+        return 200, {"player_first_name": "Test", "player_last_name": "Manager", "name": "Test FC"}
+
+    monkeypatch.setattr(team_module, "_fetch_json", fake_fetch)
+    resp = client.get("/api/team/123/plan", params={"horizon": 3, "free_transfers": 1})
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["gameweeks"] == [1, 2, 3]
+    assert data["starting_bank"] == pytest.approx(1.5)
+    assert len(data["plan"]) == 3
+    for step, gw in zip(data["plan"], data["gameweeks"]):
+        assert step["gameweek"] == gw
+        assert sum(step["formation"].values()) == 11
+        assert len(step["starter_ids"]) == 11
+        assert len(step["bench_ids"]) == 4
+        assert len(step["squad"]) == 15
+        assert isinstance(step["transfers_in"], list) and isinstance(step["transfers_out"], list)
+        assert len(step["transfers_in_names"]) == len(step["transfers_in"])
+        assert step["hits_taken"] == 0  # allow_hits not requested -> default False
+        assert step["expected_points_after_hits"] == step["expected_points"]
+        assert 0 <= step["free_transfers_after"] <= 5
+
+
+def test_team_plan_partial_squad_is_rejected(monkeypatch):
+    """Fewer than 15 matched players -- can't plan from an incomplete squad,
+    same guard as GET /api/team/{team_id} applies for the lineup/suggestions."""
+    codes, element_ids = _real_squad_codes()
+    bootstrap = _fake_bootstrap(current_gw=1, codes=codes, element_ids=element_ids)
+    partial_ids = list(element_ids.values())[:10]
+    picks_payload = {
+        "picks": [{"element": eid, "selling_price": 50} for eid in partial_ids],
+        "entry_history": {"bank": 15},
+    }
+
+    async def fake_fetch(url):
+        if "/event/" in url:
+            return 200, picks_payload
+        if "bootstrap-static" in url:
+            return 200, bootstrap
+        return 200, {"player_first_name": "Test", "player_last_name": "Manager", "name": "Test FC"}
+
+    monkeypatch.setattr(team_module, "_fetch_json", fake_fetch)
+    resp = client.get("/api/team/123/plan")
+    assert resp.status_code == 409
+
+
+def test_team_plan_allow_hits_query_param_is_accepted(monkeypatch):
+    codes, element_ids = _real_squad_codes()
+    bootstrap = _fake_bootstrap(current_gw=1, codes=codes, element_ids=element_ids)
+    picks_payload = {
+        "picks": [{"element": eid, "selling_price": 50} for eid in element_ids.values()],
+        "entry_history": {"bank": 15},
+    }
+
+    async def fake_fetch(url):
+        if "/event/" in url:
+            return 200, picks_payload
+        if "bootstrap-static" in url:
+            return 200, bootstrap
+        return 200, {"player_first_name": "Test", "player_last_name": "Manager", "name": "Test FC"}
+
+    monkeypatch.setattr(team_module, "_fetch_json", fake_fetch)
+    resp = client.get("/api/team/123/plan", params={"horizon": 2, "free_transfers": 0, "allow_hits": True})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["allow_hits"] is True
+    for step in data["plan"]:
+        assert step["hits_taken"] <= 2  # default max_hits_per_gw in optimise.plan_horizon
