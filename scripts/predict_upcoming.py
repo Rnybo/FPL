@@ -113,7 +113,7 @@ if __name__ == "__main__":
     print(f"Loaded {len(hist)} historical player-fixture rows across all seasons")
 
     print("Training Layer 3 (minutes) on full history...")
-    l3_train = l3.add_features(hist.copy())
+    l3_train = l3.add_features(hist)
     l3_result = l3.train_and_eval(l3_train, l3_train)
     # current_team_by_player: needed for is_transfer -- a fresh summer signing
     # may have zero match rows yet for their new club, so this can't be derived
@@ -121,30 +121,40 @@ if __name__ == "__main__":
     current_team_by_player = dict(conn.execute(
         "SELECT player_id, current_team_id FROM players WHERE current_team_id IS NOT NULL"
     ).fetchall())
-    l3_current = l3.current_state_features(hist.copy(), current_team_by_player).set_index("player_id")
+    l3_current = l3.current_state_features(hist, current_team_by_player).set_index("player_id")
 
     print("Training Layer 5 (bonus) on full history...")
-    l5_train = l5.add_features(hist.copy())
+    l5_train = l5.add_features(hist)
     l5_model = l5.train_and_eval(l5_train, l5_train)[0]
-    bonus_current = current_ewm_raw(hist, l5.FEATURE_SOURCE_COLS, l5.HALFLIFE_MATCHES)
+    # Column-sliced before passing in -- current_ewm_raw/current_ewm_rates each
+    # internally re-sort (and thus re-copy) whatever frame they're given, so
+    # handing them the full ~35-column `hist` just to use a handful of columns
+    # was needlessly duplicating the whole history frame on every call (found
+    # investigating a real memory-pressure slowdown on the production VM --
+    # see docs/DEPLOYMENT.md). Output is identical either way.
+    bonus_current = current_ewm_raw(
+        hist[["player_id", "kickoff_time"] + l5.FEATURE_SOURCE_COLS], l5.FEATURE_SOURCE_COLS, l5.HALFLIFE_MATCHES
+    )
     # Same simple low-variance baseline as l5.add_features's bonus_ewm_simple --
     # RULE FIX: l5_model.predict() below is called directly on the live data,
     # bypassing train_and_eval's blend entirely (that blend only lives inside
     # the function, not the model object) -- exactly the same kind of live/backtest
     # duplication already found and fixed for goals/assists and DefCon this session.
-    bonus_simple_current = current_ewm_raw(hist, ["bonus"], l5.HALFLIFE_MATCHES)
+    bonus_simple_current = current_ewm_raw(hist[["player_id", "kickoff_time", "bonus"]], ["bonus"], l5.HALFLIFE_MATCHES)
 
     print("Computing current-state rates (goals, assists, cards, penalties, saves)...")
     involvement_rates = current_ewm_rates(
-        hist, ["quality_goal_signal", "quality_assist_signal"], l2.HALFLIFE_MATCHES
+        hist[["player_id", "kickoff_time", "minutes", "quality_goal_signal", "quality_assist_signal"]],
+        ["quality_goal_signal", "quality_assist_signal"], l2.HALFLIFE_MATCHES
     )
     # Same calibration multipliers as l2.add_player_rate_features -- applied AFTER
     # the EWM rate (corrects the aggregate level; the blend above already handles
     # relative ranking, see that function's docstring for why these are separate).
     involvement_rates["quality_goal_signal_rate90"] *= l2.CALIBRATION_MULTIPLIER_GOAL
     involvement_rates["quality_assist_signal_rate90"] *= l2.CALIBRATION_MULTIPLIER_ASSIST
+    event_cols = ["yellow_cards", "red_cards", "penalties_missed", "penalties_saved", "own_goals", "saves"]
     event_rates = current_ewm_rates(
-        hist, ["yellow_cards", "red_cards", "penalties_missed", "penalties_saved", "own_goals", "saves"],
+        hist[["player_id", "kickoff_time", "minutes"] + event_cols], event_cols,
         l4b.HALFLIFE_MATCHES,
     )
 
