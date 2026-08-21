@@ -59,6 +59,17 @@ AGG_COLS = [
 # file's established no-cross-router-import pattern). GK is DEFCON-ineligible.
 DEFCON_THRESHOLDS = {"DEF": 10, "MID": 12, "FWD": 12}
 
+# Same real 2026/27 scoring values as players.py's GOAL_POINTS/ASSIST_POINTS/
+# CLEAN_SHEET_POINTS/DEFCON_POINTS (duplicated, not imported -- see above).
+# Used only to WEIGHT the started-game hit-rates into a single "weighted
+# return xP" summary column -- not a replacement for the real xP model,
+# just this board's per-start blend of goals/assists/clean-sheets/DEFCON by
+# how many points each actually carries at this player's position.
+GOAL_POINTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
+CLEAN_SHEET_POINTS = {"GK": 4, "DEF": 4, "MID": 1, "FWD": 0}
+ASSIST_POINTS = 3
+DEFCON_POINTS = 2
+
 
 def _season_aggregates(season_id: str) -> pd.DataFrame:
     """One row per player: season totals for every stat in AGG_COLS, plus
@@ -158,13 +169,13 @@ def _per_start_raw() -> pd.DataFrame:
     two separate rows here, matching player_gameweek_stats' own
     (player_id, fixture_id) primary key) across every season, just the
     columns needed for started-game rate maths: season_id, starts,
-    defensive_contribution, goals, assists. Cached globally (independent of
-    any gw window) and reused by all three season views below rather than
-    re-querying per view.
+    defensive_contribution, goals, assists, clean_sheet. Cached globally
+    (independent of any gw window) and reused by all three season views
+    below rather than re-querying per view.
     """
     def compute():
         return query_df(
-            "SELECT player_id, season_id, starts, defensive_contribution, goals, assists "
+            "SELECT player_id, season_id, starts, defensive_contribution, goals, assists, clean_sheet "
             "FROM player_gameweek_stats"
         )
     return _cached("per_start_raw", compute)
@@ -187,6 +198,14 @@ def _per_start_stats(df: pd.DataFrame, position_by_player: dict) -> dict[int, di
       with >=1 goal OR assist (the union, not goal_hit_rate + assist_hit_rate,
       which would double-count a game with both), and average goals+assists
       per start. Backs MID/FWD's combined attacking-return column.
+    - clean_sheet_hit_rate: fraction of starts with a clean sheet.
+    - weighted_return_xp: NOT the real xP model -- just this board's
+      per-start blend of the above, each weighted by how many points it's
+      actually worth at this player's position (GOAL_POINTS/ASSIST_POINTS/
+      CLEAN_SHEET_POINTS/DEFCON_POINTS), so a goal counts for more than an
+      assist, and a clean sheet counts for far more at GK/DEF than MID and
+      not at all at FWD -- matching the real scoring rules rather than
+      treating every "return" as equally valuable.
     - defcon_starts: the started-game sample size all of the above are
       based on, so the UI can show/require a minimum sample.
     """
@@ -202,24 +221,40 @@ def _per_start_stats(df: pd.DataFrame, position_by_player: dict) -> dict[int, di
     df["assist_hit"] = df["assists"].fillna(0) >= 1
     df["gi_hit"] = df["goal_hit"] | df["assist_hit"]
     df["gi"] = df["goals"].fillna(0) + df["assists"].fillna(0)
+    df["cs_hit"] = df["clean_sheet"].fillna(0) >= 1
 
     out: dict[int, dict] = {}
     for pid, g in df.groupby("player_id"):
+        pos = g["position"].iloc[0]
         threshold = g["threshold"].iloc[0]
+        goals_per_start = float(g["goals"].fillna(0).mean())
+        assists_per_start = float(g["assists"].fillna(0).mean())
+        cs_hit_rate = float(g["cs_hit"].mean())
+        defcon_hit_rate = None if pd.isna(threshold) else float(g["defcon_hit"].mean())
+
+        weighted_return_xp = (
+            goals_per_start * GOAL_POINTS.get(pos, 0)
+            + assists_per_start * ASSIST_POINTS
+            + cs_hit_rate * CLEAN_SHEET_POINTS.get(pos, 0)
+            + (defcon_hit_rate or 0) * DEFCON_POINTS
+        )
+
         entry = {
             "defcon_starts": int(len(g)),
             "goals_hit_rate": round(float(g["goal_hit"].mean()), 3),
-            "goals_per_start": round(float(g["goals"].fillna(0).mean()), 2),
+            "goals_per_start": round(goals_per_start, 2),
             "assists_hit_rate": round(float(g["assist_hit"].mean()), 3),
-            "assists_per_start": round(float(g["assists"].fillna(0).mean()), 2),
+            "assists_per_start": round(assists_per_start, 2),
             "gi_hit_rate": round(float(g["gi_hit"].mean()), 3),
             "gi_per_start": round(float(g["gi"].mean()), 2),
+            "clean_sheet_hit_rate": round(cs_hit_rate, 3),
+            "weighted_return_xp": round(weighted_return_xp, 2),
         }
-        if pd.isna(threshold):  # GK -- DEFCON-ineligible
+        if defcon_hit_rate is None:  # GK -- DEFCON-ineligible
             entry["defcon_hit_rate"] = None
             entry["defcon_per_start"] = None
         else:
-            entry["defcon_hit_rate"] = round(float(g["defcon_hit"].mean()), 3)
+            entry["defcon_hit_rate"] = round(defcon_hit_rate, 3)
             entry["defcon_per_start"] = round(float(g["defensive_contribution"].fillna(0).mean()), 2)
         out[int(pid)] = entry
     return out

@@ -599,6 +599,7 @@ type LeaderSortField =
   | 'goals_hit_rate' | 'goals_per_start'
   | 'assists_hit_rate' | 'assists_per_start'
   | 'gi_hit_rate' | 'gi_per_start'
+  | 'weighted_return_xp'
 
 type LeaderRow = { player: PlayerPerf; stats: PerformanceSeasonStats }
 
@@ -639,10 +640,10 @@ function PositionLeaderboard({ pos, players, season, playerById, onSelectPlayer 
   playerById: Map<number, Player>
   onSelectPlayer: (p: Player) => void
 }) {
-  // Same "best-known metric first" defaults as before, now just the
-  // starting point rather than the only option -- clicking any header
-  // re-sorts every bracket by that column instead.
-  const [sortField, setSortField] = useState<LeaderSortField>(pos === 'GK' ? 'clean_sheet' : 'defcon_hit_rate')
+  // Weighted return xP is the headline "who's actually worth their price"
+  // number for every position -- default sort everywhere. Clicking any
+  // other header re-sorts every bracket by that column instead.
+  const [sortField, setSortField] = useState<LeaderSortField>('weighted_return_xp')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   function onSort(field: LeaderSortField) {
@@ -708,6 +709,10 @@ function PositionLeaderboard({ pos, players, season, playerById, onSelectPlayer 
                       way they don't for MID/FWD (1pt/0pts) -- shown only on
                       the DEF board, not as a general outfield column. */}
                   {pos === 'DEF' && <LeaderTh field="clean_sheet" label="Clean sheets" align="right" sortField={sortField} sortDir={sortDir} onClick={onSort} />}
+                  {/* Headline summary column for every position -- goals/
+                      assists/clean-sheet/DEFCON blended by their real point
+                      value at this position, not just a raw event count. */}
+                  <LeaderTh field="weighted_return_xp" label="Weighted return xP" align="right" sortField={sortField} sortDir={sortDir} onClick={onSort} />
                   {pos === 'GK' ? (
                     <>
                       <LeaderTh field="clean_sheet" label="Clean sheets" align="right" sortField={sortField} sortDir={sortDir} onClick={onSort} />
@@ -749,6 +754,7 @@ function PositionLeaderboard({ pos, players, season, playerById, onSelectPlayer 
                     </td>
                     <td className="py-1.5 px-2 text-right text-slate-600">{stats.starts ?? '\u2014'}</td>
                     {pos === 'DEF' && <td className="py-1.5 px-2 text-right text-slate-600">{stats.clean_sheet ?? '\u2014'}</td>}
+                    <td className="py-1.5 px-2 text-right font-semibold text-slate-900">{fmt(stats.weighted_return_xp, 2)}</td>
                     {pos === 'GK' ? (
                       <>
                         <td className="py-1.5 px-2 text-right text-slate-600">{stats.clean_sheet ?? '\u2014'}</td>

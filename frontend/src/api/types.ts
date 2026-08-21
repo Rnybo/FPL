@@ -542,6 +542,13 @@ export interface PerformanceSeasonStats {
   // start. Backs MID/FWD's combined attacking-return column.
   gi_hit_rate: number | null
   gi_per_start: number | null
+  // Fraction of starts with a clean sheet, and a single per-start "weighted
+  // return xP" blending goals/assists/clean-sheet/DEFCON by their ACTUAL
+  // point value at this position (goal > assist > DEFCON; clean sheet
+  // worth far more at GK/DEF than MID, zero at FWD). Not the real xP model
+  // -- see performance.py's _per_start_stats.
+  clean_sheet_hit_rate: number | null
+  weighted_return_xp: number | null
   // Only present on the "sustained" (multi-season) entry -- how many
   // qualifying seasons (>= sustained_min_minutes_per_season each) were
   // summed into this player's numbers, and which ones. Absent on
