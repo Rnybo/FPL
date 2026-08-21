@@ -98,9 +98,12 @@ FEATURE_COLUMNS = [f"{c}_ewm" for c in FEATURE_SOURCE_COLS] + ["position_code", 
 
 
 def train_and_eval(train_df, test_df):
+    # n_jobs=1 -- see fit_minutes_model.py's train_and_eval docstring for why
+    # (memory-per-thread cost on the production VM outweighed the parallelism
+    # benefit; also makes training fully deterministic).
     model = lgb.LGBMRegressor(
         n_estimators=200, max_depth=4, learning_rate=0.05,
-        min_child_samples=30, verbose=-1,
+        min_child_samples=30, verbose=-1, n_jobs=1,
     )
     model.fit(train_df[FEATURE_COLUMNS], train_df["bonus"])
     lgb_pred = model.predict(test_df[FEATURE_COLUMNS])

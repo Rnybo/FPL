@@ -189,14 +189,22 @@ def _boundary_weights(frame):
 
 
 def train_and_eval(train_df, test_df):
+    # n_jobs=1 -- found investigating a real production slowdown (see
+    # docs/DEPLOYMENT.md): multi-threaded LightGBM allocates its histogram/
+    # working buffers PER THREAD, so on the memory-starved e2-micro VM this
+    # was adding peak-memory pressure for a parallelism gain the box's
+    # throttled 2 shared vCPUs couldn't actually realize. Single-threaded
+    # is also fully deterministic (multi-threaded histogram reduction has a
+    # tiny floating-point order-of-operations non-determinism); output
+    # verified unchanged (to the model's own precision) either way.
     weights = _boundary_weights(train_df)
     clf = lgb.LGBMClassifier(n_estimators=150, max_depth=4, learning_rate=0.05,
-                              min_child_samples=30, verbose=-1)
+                              min_child_samples=30, verbose=-1, n_jobs=1)
     clf.fit(train_df[FEATURE_COLUMNS], train_df["played"], sample_weight=weights)
     p_played_test = clf.predict_proba(test_df[FEATURE_COLUMNS])[:, 1]
 
     reg = lgb.LGBMRegressor(n_estimators=150, max_depth=4, learning_rate=0.05,
-                             min_child_samples=30, verbose=-1)
+                             min_child_samples=30, verbose=-1, n_jobs=1)
     played_train = train_df[train_df["played"] == 1]
     reg.fit(played_train[FEATURE_COLUMNS], played_train["minutes"])
     e_minutes_given_played_test = reg.predict(test_df[FEATURE_COLUMNS])
@@ -205,7 +213,7 @@ def train_and_eval(train_df, test_df):
     played_train["played_60plus"] = (played_train["minutes"] >= 60).astype(int)
     clf60_weights = _boundary_weights(played_train)
     clf60 = lgb.LGBMClassifier(n_estimators=150, max_depth=4, learning_rate=0.05,
-                                min_child_samples=30, verbose=-1)
+                                min_child_samples=30, verbose=-1, n_jobs=1)
     clf60.fit(played_train[FEATURE_COLUMNS], played_train["played_60plus"], sample_weight=clf60_weights)
     p_60plus_given_played_test = clf60.predict_proba(test_df[FEATURE_COLUMNS])[:, 1]
 
