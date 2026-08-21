@@ -94,6 +94,15 @@ def start():
     scheduler.add_job(lambda: _run_script("fetch_live_team_news.py"),
                        "interval", hours=6, next_run_time=now + timedelta(hours=6), id="live_team_news")
 
+    # Same cadence/rationale as fetch_live_team_news.py -- FFS "fine-tunes"
+    # predicted lineups closer to a deadline too (see fetch_predicted_lineups.py's
+    # docstring). Not in _INVALIDATES_PLAYERS_CACHE: nothing in the API layer
+    # reads predicted_lineups directly yet, only predict_upcoming.py consumes
+    # it (which is already in that set) -- so invalidating here would just be
+    # an extra rewarm with nothing new to show.
+    scheduler.add_job(lambda: _run_script("fetch_predicted_lineups.py"),
+                       "interval", hours=6, next_run_time=now + timedelta(hours=6), id="predicted_lineups")
+
     # Roster/fixtures change rarely mid-week; daily is plenty
     scheduler.add_job(lambda: _run_script("fetch_current_roster.py"),
                        "interval", hours=24, next_run_time=now + timedelta(hours=24), id="current_roster")

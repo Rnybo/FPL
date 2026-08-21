@@ -16,6 +16,21 @@ live status tells us WHETHER they play, not how long if they do):
   - status == available (or doubtful with no percentage given): no override,
     use the model's own historical-pattern estimate as-is.
 
+Second override tier -- fetch_predicted_lineups.py's FFS predicted-XI signal,
+applied only to a player's OWN next fixture (predicted_lineups.fixture_id is
+specific to that one match, so joining on player_id+fixture_id naturally
+scopes this and leaves every later gameweek in a multi-GW horizon untouched):
+  - named in the predicted XI: P(plays) REPLACED with CONFIRMED_STARTER_P_PLAYED.
+    Per-user figure (~95% predicted-XI accuracy) used as an initial prior --
+    intended to be replaced with our OWN logged accuracy (predicted vs actual
+    `starts`) once a few gameweeks of real comparisons exist.
+  - NOT named in the predicted XI (or no prediction available yet): no
+    override here -- deliberately NOT forced toward 0. FFS predicts STARTS,
+    our model predicts P(plays AT ALL), and a fit player left out of the XI
+    graphic can still be a reliable impact sub; zeroing this out would hurt
+    calibration, not help it (see chat discussion). Left as an open TODO to
+    revisit once accuracy logging exists.
+
 This is NOT backtestable (see docs/multi-gameweek-forecasting.md and the live
 collector's own docstring) -- demonstrated here against the REAL current live
 snapshot, not a historical test set.
@@ -33,6 +48,12 @@ DB = ROOT / "data" / "fpl_cache.db"
 
 UNAVAILABLE_STATUSES = {"i", "s", "u"}
 
+# Initial prior for a player named in FFS's predicted starting XI -- see this
+# module's docstring. Not fitted from our own data (can't be, yet); revisit
+# once fetch_predicted_lineups.py has a few real gameweeks of predicted-vs-
+# actual `starts` to check this against.
+CONFIRMED_STARTER_P_PLAYED = 0.95
+
 # Human-readable labels for the raw single-letter status codes -- used
 # wherever status is surfaced to the person (Player Scout, Player
 # Performance, Squad Builder, My Team), not just fed into the model.
@@ -45,11 +66,14 @@ STATUS_LABELS = {
 }
 
 
-def apply_override(p_played_model: float, status: str, chance_next: float | None) -> float:
+def apply_override(p_played_model: float, status: str, chance_next: float | None,
+                    predicted_start: float | None = None) -> float:
     if status in UNAVAILABLE_STATUSES:
         return 0.0
     if status == "d" and chance_next is not None:
         return chance_next / 100.0
+    if predicted_start == 1:
+        return CONFIRMED_STARTER_P_PLAYED
     return p_played_model
 
 
@@ -63,6 +87,20 @@ def load_live_status(conn) -> pd.DataFrame:
            FROM live_player_status
            WHERE captured_at = (SELECT MAX(captured_at) FROM live_player_status)
            AND player_id IS NOT NULL""",
+        conn,
+    )
+
+
+def load_predicted_lineups(conn) -> pd.DataFrame:
+    """Latest FFS predicted-XI snapshot -- fixture_id-scoped (see this
+    module's docstring), so callers merge on (player_id, fixture_id) rather
+    than player_id alone. Only contains rows for the 11 named starters per
+    team (see fetch_predicted_lineups.py); a missing row after the merge
+    means "not predicted to start," not "unknown player."""
+    return pd.read_sql_query(
+        """SELECT player_id, fixture_id, predicted_start
+           FROM predicted_lineups
+           WHERE captured_at = (SELECT MAX(captured_at) FROM predicted_lineups)""",
         conn,
     )
 

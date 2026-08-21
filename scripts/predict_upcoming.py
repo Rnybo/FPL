@@ -32,7 +32,7 @@ import fit_defensive_contribution as l4a
 import fit_bonus_points as l5
 import blend_odds_with_model as l1b
 import combine_xp as cx
-from apply_live_status_override import apply_override, load_live_status
+from apply_live_status_override import apply_override, load_live_status, load_predicted_lineups
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "fpl_cache.db"
@@ -262,8 +262,18 @@ if __name__ == "__main__":
     live = load_live_status(conn)
     df = df.merge(live[["player_id", "status", "chance_of_playing_next_round"]], on="player_id", how="left")
     df["status"] = df["status"].fillna("a")
+
+    # FFS predicted-XI tier -- merged on (player_id, fixture_id) since
+    # predicted_lineups.fixture_id is specific to each player's OWN next
+    # match (see apply_live_status_override.py's docstring); every other row
+    # in this player's multi-gameweek horizon simply gets no match (NaN),
+    # correctly falling through to the model's own estimate in apply_override.
+    predicted_lineups = load_predicted_lineups(conn)
+    df = df.merge(predicted_lineups, on=["player_id", "fixture_id"], how="left")
+
     df["p_played_final"] = df.apply(
-        lambda r: apply_override(r["p_played_model"], r["status"], r["chance_of_playing_next_round"]), axis=1
+        lambda r: apply_override(r["p_played_model"], r["status"], r["chance_of_playing_next_round"],
+                                  r["predicted_start"]), axis=1
     )
     df["expected_minutes"] = np.clip(df["p_played_final"] * df["e_minutes_given_played"], 0, 95)
 

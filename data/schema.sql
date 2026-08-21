@@ -286,3 +286,28 @@ ALTER TABLE saved_squads ADD COLUMN locked_player_ids TEXT NOT NULL DEFAULT '[]'
 ALTER TABLE live_player_status ADD COLUMN penalties_order INTEGER;
 ALTER TABLE live_player_status ADD COLUMN direct_freekicks_order INTEGER;
 ALTER TABLE live_player_status ADD COLUMN corners_and_indirect_freekicks_order INTEGER;
+
+
+-- Added for FFS ("fantasyfootballscout.co.uk/team-news") predicted-XI live
+-- signal -- fills the "genuine starting uncertainty for fit players" gap
+-- noted in docs/model-architecture.md (live_player_status/status covers
+-- injury/suspension but not rotation risk for players who are simply fit).
+-- Like live_player_status, this is NOT backtestable -- historical predicted
+-- lineups aren't preserved anywhere we have access to -- so it only
+-- accumulates value going forward from whenever we start polling.
+-- fixture_id ties each row to the SPECIFIC next match it was predicted for
+-- (FFS only predicts one match ahead per team), unlike live_player_status
+-- which is evergreen until the next fetch. Only the 11 named starters are
+-- stored (predicted_start is always 1 here) -- "no row for this player" is
+-- read downstream as "not predicted to start," so a non-starter never needs
+-- its own row.
+CREATE TABLE IF NOT EXISTS predicted_lineups (
+    player_id       INTEGER,
+    team_id         INTEGER,
+    fixture_id      INTEGER,
+    predicted_start INTEGER,   -- 1 = named in FFS's predicted starting XI
+    source          TEXT,      -- 'ffscout'
+    captured_at     TEXT,
+    FOREIGN KEY (player_id) REFERENCES players(player_id),
+    FOREIGN KEY (fixture_id) REFERENCES fixtures(fixture_id)
+);
